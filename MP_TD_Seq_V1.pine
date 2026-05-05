@@ -570,8 +570,8 @@ if sellCountdown.active and not sellCountdown.complete and sellCountdown.count >
                 lastEventText := "Sell CD 13 qualified"
             else
                 sellCountdown.awaitingQualifier := true
-                    sell13DisqualifiedThisBar := true
-                    lastEventText := "Sell CD 13 disqualified — waiting"
+                sell13DisqualifiedThisBar := true
+                lastEventText := "Sell CD 13 disqualified — waiting"
 
 // ----------------------------------------------------------------------------
 // 5.11  TDST VIOLATION CANCEL  (§3.10.2)
