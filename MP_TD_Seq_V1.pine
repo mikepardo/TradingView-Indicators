@@ -260,15 +260,26 @@ sellSetupCond = close > close[setupLookback]    // §3.4
 buySetupCompletedThisBar  = false
 sellSetupCompletedThisBar = false
 
-if buySetup.count == 0
-    if bearishFlip or (not requirePriceFlip and buySetupCond)
-        buySetup.count := 1
-        buySetup.direction := -1
-        buySetup.bar1Index := bar_index
-        buySetup.highestTrueHigh := th0
-        buySetup.lowestTrueLow := tl0
-        array.push(buySetupBars, bar_index)
-else
+// Three states per direction:
+//   (a) idle       (count == 0)            — looking for a Price Flip
+//   (b) building   (count 1..8)            — counting toward 9
+//   (c) completed  (count == 9, locked)    — TDST drawn, supports Countdown
+//                                            and forward-looking perfection
+// A new Price Flip after completion supersedes the old Setup (§3.5: a new
+// Setup in either direction ends the previous one's perfection check).
+buyStartingNew = bearishFlip or (buySetup.count == 0 and not requirePriceFlip and buySetupCond)
+
+if buyStartingNew
+    // start fresh — overwrite any prior (idle/building/completed) state
+    clearSetup(buySetup)
+    array.clear(buySetupBars)
+    buySetup.count := 1
+    buySetup.direction := -1
+    buySetup.bar1Index := bar_index
+    buySetup.highestTrueHigh := th0
+    buySetup.lowestTrueLow := tl0
+    array.push(buySetupBars, bar_index)
+else if buySetup.count > 0 and not buySetup.complete
     if buySetupCond
         // continue (§3.3)
         buySetup.count := buySetup.count + 1
@@ -281,31 +292,33 @@ else
         if buySetup.count == 7
             buySetup.bar7Low  := tl0
             buySetup.bar7High := th0
-        if buySetup.count == setupLength and not buySetup.complete
+        if buySetup.count == setupLength
             buySetup.complete := true
             buySetup.completionBar := bar_index
             buySetup.size := buySetup.highestTrueHigh - buySetup.lowestTrueLow
             buySetupCompletedThisBar := true
             lastEventText := "Buy Setup 9 complete"
     else
-        // reset (§3.3) — only if the Setup hadn't already completed; if it
-        // had, leave state intact so Countdown/TDST/perfection keep working.
-        if not buySetup.complete
-            clearSetup(buySetup)
-            array.clear(buySetupBars)
+        // reset (§3.3) — count broken before completion
+        clearSetup(buySetup)
+        array.clear(buySetupBars)
+// when complete: count locked at 9; extension tracking lives in §5.9
 
 // ----------------------------------------------------------------------------
 // 5.4  SELL SETUP STATE  (§3.4)
 // ----------------------------------------------------------------------------
-if sellSetup.count == 0
-    if bullishFlip or (not requirePriceFlip and sellSetupCond)
-        sellSetup.count := 1
-        sellSetup.direction := +1
-        sellSetup.bar1Index := bar_index
-        sellSetup.highestTrueHigh := th0
-        sellSetup.lowestTrueLow := tl0
-        array.push(sellSetupBars, bar_index)
-else
+sellStartingNew = bullishFlip or (sellSetup.count == 0 and not requirePriceFlip and sellSetupCond)
+
+if sellStartingNew
+    clearSetup(sellSetup)
+    array.clear(sellSetupBars)
+    sellSetup.count := 1
+    sellSetup.direction := +1
+    sellSetup.bar1Index := bar_index
+    sellSetup.highestTrueHigh := th0
+    sellSetup.lowestTrueLow := tl0
+    array.push(sellSetupBars, bar_index)
+else if sellSetup.count > 0 and not sellSetup.complete
     if sellSetupCond
         sellSetup.count := sellSetup.count + 1
         array.push(sellSetupBars, bar_index)
@@ -317,28 +330,31 @@ else
         if sellSetup.count == 7
             sellSetup.bar7High := th0
             sellSetup.bar7Low  := tl0
-        if sellSetup.count == setupLength and not sellSetup.complete
+        if sellSetup.count == setupLength
             sellSetup.complete := true
             sellSetup.completionBar := bar_index
             sellSetup.size := sellSetup.highestTrueHigh - sellSetup.lowestTrueLow
             sellSetupCompletedThisBar := true
             lastEventText := "Sell Setup 9 complete"
     else
-        if not sellSetup.complete
-            clearSetup(sellSetup)
-            array.clear(sellSetupBars)
+        clearSetup(sellSetup)
+        array.clear(sellSetupBars)
 
 // ----------------------------------------------------------------------------
 // 5.5  SETUP PERFECTION — forward-looking  (§3.5)
 // ----------------------------------------------------------------------------
-if buySetup.complete and not buySetup.perfected and buySetup.count >= setupLength - 1
+// Perfection eligible on bar 8, bar 9, or any later bar while the Setup is
+// still the most recent — i.e., count >= setupLength - 1. With count locked
+// at 9 post-completion, this naturally covers the forward-looking window.
+// If a building Setup is later canceled, clearSetup() resets `perfected`.
+if buySetup.count >= setupLength - 1 and not buySetup.perfected
     if not na(buySetup.bar6Low) and not na(buySetup.bar7Low)
         if tl0 < buySetup.bar6Low and tl0 < buySetup.bar7Low
             buySetup.perfected := true
             buySetup.perfectionBar := bar_index
             lastEventText := "Buy Setup perfected"
 
-if sellSetup.complete and not sellSetup.perfected and sellSetup.count >= setupLength - 1
+if sellSetup.count >= setupLength - 1 and not sellSetup.perfected
     if not na(sellSetup.bar6High) and not na(sellSetup.bar7High)
         if th0 > sellSetup.bar6High and th0 > sellSetup.bar7High
             sellSetup.perfected := true
@@ -456,98 +472,104 @@ buy13DisqualifiedThisBar = false
 sell13QualifiedThisBar   = false
 sell13DisqualifiedThisBar = false
 
-if buySetup.complete
-    if buyCountdown.count == 0 and not buyCountdown.complete
-        // Initiation — bar 9 of Setup is bar 1 of Countdown iff qualifier met. (§3.7)
+// Countdown initiation (§3.7) requires the most recent same-direction Setup
+// to have completed. Continuation/qualifier (§3.8-3.9) only require an active
+// Countdown — they must keep running even if a new same-direction Setup has
+// started building (which doesn't, on its own, cancel the existing Countdown).
+
+// --- BUY COUNTDOWN ---
+if buySetup.complete and buyCountdown.count == 0 and not buyCountdown.complete
+    // Bar 9 of Setup is bar 1 of Countdown iff qualifier met. (§3.7)
+    if buyCDCond
+        buyCountdown.count := 1
+        buyCountdown.active := true
+        buyCountdown.direction := -1
+        buyCountdown.setupRefBarIdx := buySetup.completionBar
+        buyCountdown.lowestTrueLowInCountdown := tl0
+        buyCountdown.trueRangeAtExtreme := tr0
+        buyCountdown.extremeBar := bar_index
+        array.push(buyCountdownBars, bar_index)
+        lastEventText := "Buy CD 1 initiated"
+
+if buyCountdown.active and not buyCountdown.complete and buyCountdown.count > 0
+    if buyCountdown.count < countdownLength - 1
+        // Standard increment 1..12. (§3.8)
         if buyCDCond
-            buyCountdown.count := 1
-            buyCountdown.active := true
-            buyCountdown.direction := -1
-            buyCountdown.setupRefBarIdx := buySetup.completionBar
-            buyCountdown.lowestTrueLowInCountdown := tl0
-            buyCountdown.trueRangeAtExtreme := tr0
-            buyCountdown.extremeBar := bar_index
+            buyCountdown.count := buyCountdown.count + 1
             array.push(buyCountdownBars, bar_index)
-            lastEventText := "Buy CD 1 initiated"
-    else if buyCountdown.active and not buyCountdown.complete
-        if buyCountdown.count < countdownLength - 1
-            // Standard increment 1..12. (§3.8)
-            if buyCDCond
-                buyCountdown.count := buyCountdown.count + 1
+            if tl0 < buyCountdown.lowestTrueLowInCountdown
+                buyCountdown.lowestTrueLowInCountdown := tl0
+                buyCountdown.trueRangeAtExtreme := tr0
+                buyCountdown.extremeBar := bar_index
+            if buyCountdown.count == qualifierBar
+                buyCountdown.bar8Close := close
+    else if buyCountdown.count == countdownLength - 1
+        // Awaiting bar 13 — must satisfy CD condition AND 13-vs-8 qualifier. (§3.9)
+        if buyCDCond
+            qualifier = (not requireQualifier) or na(buyCountdown.bar8Close) or (low <= buyCountdown.bar8Close)
+            if qualifier
+                buyCountdown.count := countdownLength
+                buyCountdown.qualified := true
+                buyCountdown.complete := true
+                buyCountdown.completionBar := bar_index
+                buyCountdown.awaitingQualifier := false
                 array.push(buyCountdownBars, bar_index)
                 if tl0 < buyCountdown.lowestTrueLowInCountdown
                     buyCountdown.lowestTrueLowInCountdown := tl0
                     buyCountdown.trueRangeAtExtreme := tr0
                     buyCountdown.extremeBar := bar_index
-                if buyCountdown.count == qualifierBar
-                    buyCountdown.bar8Close := close
-        else if buyCountdown.count == countdownLength - 1
-            // Awaiting bar 13 — must satisfy CD condition AND 13-vs-8 qualifier. (§3.9)
-            if buyCDCond
-                qualifier = (not requireQualifier) or na(buyCountdown.bar8Close) or (low <= buyCountdown.bar8Close)
-                if qualifier
-                    buyCountdown.count := countdownLength
-                    buyCountdown.qualified := true
-                    buyCountdown.complete := true
-                    buyCountdown.completionBar := bar_index
-                    buyCountdown.awaitingQualifier := false
-                    array.push(buyCountdownBars, bar_index)
-                    if tl0 < buyCountdown.lowestTrueLowInCountdown
-                        buyCountdown.lowestTrueLowInCountdown := tl0
-                        buyCountdown.trueRangeAtExtreme := tr0
-                        buyCountdown.extremeBar := bar_index
-                    // Risk Level (§3.12).
-                    buyCountdown.riskLevel := buyCountdown.lowestTrueLowInCountdown - buyCountdown.trueRangeAtExtreme
-                    buy13QualifiedThisBar := true
-                    lastEventText := "Buy CD 13 qualified"
-                else
-                    buyCountdown.awaitingQualifier := true
-                    buy13DisqualifiedThisBar := true
-                    lastEventText := "Buy CD 13 disqualified — waiting"
+                // Risk Level (§3.12).
+                buyCountdown.riskLevel := buyCountdown.lowestTrueLowInCountdown - buyCountdown.trueRangeAtExtreme
+                buy13QualifiedThisBar := true
+                lastEventText := "Buy CD 13 qualified"
+            else
+                buyCountdown.awaitingQualifier := true
+                buy13DisqualifiedThisBar := true
+                lastEventText := "Buy CD 13 disqualified — waiting"
 
 // --- SELL COUNTDOWN ---
-if sellSetup.complete
-    if sellCountdown.count == 0 and not sellCountdown.complete
+if sellSetup.complete and sellCountdown.count == 0 and not sellCountdown.complete
+    if sellCDCond
+        sellCountdown.count := 1
+        sellCountdown.active := true
+        sellCountdown.direction := +1
+        sellCountdown.setupRefBarIdx := sellSetup.completionBar
+        sellCountdown.highestTrueHighInCountdown := th0
+        sellCountdown.trueRangeAtExtreme := tr0
+        sellCountdown.extremeBar := bar_index
+        array.push(sellCountdownBars, bar_index)
+        lastEventText := "Sell CD 1 initiated"
+
+if sellCountdown.active and not sellCountdown.complete and sellCountdown.count > 0
+    if sellCountdown.count < countdownLength - 1
         if sellCDCond
-            sellCountdown.count := 1
-            sellCountdown.active := true
-            sellCountdown.direction := +1
-            sellCountdown.setupRefBarIdx := sellSetup.completionBar
-            sellCountdown.highestTrueHighInCountdown := th0
-            sellCountdown.trueRangeAtExtreme := tr0
-            sellCountdown.extremeBar := bar_index
+            sellCountdown.count := sellCountdown.count + 1
             array.push(sellCountdownBars, bar_index)
-            lastEventText := "Sell CD 1 initiated"
-    else if sellCountdown.active and not sellCountdown.complete
-        if sellCountdown.count < countdownLength - 1
-            if sellCDCond
-                sellCountdown.count := sellCountdown.count + 1
+            if th0 > sellCountdown.highestTrueHighInCountdown
+                sellCountdown.highestTrueHighInCountdown := th0
+                sellCountdown.trueRangeAtExtreme := tr0
+                sellCountdown.extremeBar := bar_index
+            if sellCountdown.count == qualifierBar
+                sellCountdown.bar8Close := close
+    else if sellCountdown.count == countdownLength - 1
+        if sellCDCond
+            qualifier = (not requireQualifier) or na(sellCountdown.bar8Close) or (high >= sellCountdown.bar8Close)
+            if qualifier
+                sellCountdown.count := countdownLength
+                sellCountdown.qualified := true
+                sellCountdown.complete := true
+                sellCountdown.completionBar := bar_index
+                sellCountdown.awaitingQualifier := false
                 array.push(sellCountdownBars, bar_index)
                 if th0 > sellCountdown.highestTrueHighInCountdown
                     sellCountdown.highestTrueHighInCountdown := th0
                     sellCountdown.trueRangeAtExtreme := tr0
                     sellCountdown.extremeBar := bar_index
-                if sellCountdown.count == qualifierBar
-                    sellCountdown.bar8Close := close
-        else if sellCountdown.count == countdownLength - 1
-            if sellCDCond
-                qualifier = (not requireQualifier) or na(sellCountdown.bar8Close) or (high >= sellCountdown.bar8Close)
-                if qualifier
-                    sellCountdown.count := countdownLength
-                    sellCountdown.qualified := true
-                    sellCountdown.complete := true
-                    sellCountdown.completionBar := bar_index
-                    sellCountdown.awaitingQualifier := false
-                    array.push(sellCountdownBars, bar_index)
-                    if th0 > sellCountdown.highestTrueHighInCountdown
-                        sellCountdown.highestTrueHighInCountdown := th0
-                        sellCountdown.trueRangeAtExtreme := tr0
-                        sellCountdown.extremeBar := bar_index
-                    sellCountdown.riskLevel := sellCountdown.highestTrueHighInCountdown + sellCountdown.trueRangeAtExtreme
-                    sell13QualifiedThisBar := true
-                    lastEventText := "Sell CD 13 qualified"
-                else
-                    sellCountdown.awaitingQualifier := true
+                sellCountdown.riskLevel := sellCountdown.highestTrueHighInCountdown + sellCountdown.trueRangeAtExtreme
+                sell13QualifiedThisBar := true
+                lastEventText := "Sell CD 13 qualified"
+            else
+                sellCountdown.awaitingQualifier := true
                     sell13DisqualifiedThisBar := true
                     lastEventText := "Sell CD 13 disqualified — waiting"
 
