@@ -204,74 +204,40 @@ showThisCountdownCount(int n) =>
 // Truncate a float for compact display.
 fmt(float v) => na(v) ? "—" : str.tostring(v, format.mintick)
 
-// Reset routines.
-resetBuySetup() =>
-    buySetup.count := 0
-    buySetup.complete := false
-    buySetup.perfected := false
-    buySetup.bar1Index := na
-    buySetup.perfectionBar := na
-    buySetup.highestTrueHigh := na
-    buySetup.lowestTrueLow := na
-    buySetup.bar6Low := na
-    buySetup.bar7Low := na
-    buySetup.bar6High := na
-    buySetup.bar7High := na
-    buySetup.extensionCount := 0
-    buySetup.size := na
-    buySetup.completionBar := na
-    array.clear(buySetupBars)
+// Reset helpers — Pine v6 forbids global-primitive writes from inside user
+// functions, so these only mutate the UDT instance passed by reference. Each
+// call site is responsible for clearing the matching bar-index array and
+// updating `lastEventText` itself.
+clearSetup(SetupState s) =>
+    s.count := 0
+    s.complete := false
+    s.perfected := false
+    s.bar1Index := na
+    s.perfectionBar := na
+    s.highestTrueHigh := na
+    s.lowestTrueLow := na
+    s.bar6Low := na
+    s.bar7Low := na
+    s.bar6High := na
+    s.bar7High := na
+    s.extensionCount := 0
+    s.size := na
+    s.completionBar := na
 
-resetSellSetup() =>
-    sellSetup.count := 0
-    sellSetup.complete := false
-    sellSetup.perfected := false
-    sellSetup.bar1Index := na
-    sellSetup.perfectionBar := na
-    sellSetup.highestTrueHigh := na
-    sellSetup.lowestTrueLow := na
-    sellSetup.bar6Low := na
-    sellSetup.bar7Low := na
-    sellSetup.bar6High := na
-    sellSetup.bar7High := na
-    sellSetup.extensionCount := 0
-    sellSetup.size := na
-    sellSetup.completionBar := na
-    array.clear(sellSetupBars)
-
-resetBuyCountdown(string reason) =>
-    if buyCountdown.active or buyCountdown.count > 0
-        lastEventText := "Buy CD canceled: " + reason
-    buyCountdown.count := 0
-    buyCountdown.active := false
-    buyCountdown.complete := false
-    buyCountdown.qualified := false
-    buyCountdown.awaitingQualifier := false
-    buyCountdown.bar8Close := na
-    buyCountdown.riskLevel := na
-    buyCountdown.completionBar := na
-    buyCountdown.lowestTrueLowInCountdown := na
-    buyCountdown.trueRangeAtExtreme := na
-    buyCountdown.extremeBar := na
-    buyCountdown.setupRefBarIdx := na
-    array.clear(buyCountdownBars)
-
-resetSellCountdown(string reason) =>
-    if sellCountdown.active or sellCountdown.count > 0
-        lastEventText := "Sell CD canceled: " + reason
-    sellCountdown.count := 0
-    sellCountdown.active := false
-    sellCountdown.complete := false
-    sellCountdown.qualified := false
-    sellCountdown.awaitingQualifier := false
-    sellCountdown.bar8Close := na
-    sellCountdown.riskLevel := na
-    sellCountdown.completionBar := na
-    sellCountdown.highestTrueHighInCountdown := na
-    sellCountdown.trueRangeAtExtreme := na
-    sellCountdown.extremeBar := na
-    sellCountdown.setupRefBarIdx := na
-    array.clear(sellCountdownBars)
+clearCountdown(CountdownState c) =>
+    c.count := 0
+    c.active := false
+    c.complete := false
+    c.qualified := false
+    c.awaitingQualifier := false
+    c.bar8Close := na
+    c.riskLevel := na
+    c.completionBar := na
+    c.lowestTrueLowInCountdown := na
+    c.highestTrueHighInCountdown := na
+    c.trueRangeAtExtreme := na
+    c.extremeBar := na
+    c.setupRefBarIdx := na
 
 
 // ============================================================================
@@ -322,14 +288,11 @@ else
             buySetupCompletedThisBar := true
             lastEventText := "Buy Setup 9 complete"
     else
-        // reset (§3.3)
+        // reset (§3.3) — only if the Setup hadn't already completed; if it
+        // had, leave state intact so Countdown/TDST/perfection keep working.
         if not buySetup.complete
-            resetBuySetup()
-        else
-            // Setup is complete; the failed condition simply ends the
-            // 22-bar extension window. Keep state so Countdown logic
-            // and TDST line continue to function.
-            na
+            clearSetup(buySetup)
+            array.clear(buySetupBars)
 
 // ----------------------------------------------------------------------------
 // 5.4  SELL SETUP STATE  (§3.4)
@@ -362,7 +325,8 @@ else
             lastEventText := "Sell Setup 9 complete"
     else
         if not sellSetup.complete
-            resetSellSetup()
+            clearSetup(sellSetup)
+            array.clear(sellSetupBars)
 
 // ----------------------------------------------------------------------------
 // 5.5  SETUP PERFECTION — forward-looking  (§3.5)
@@ -417,9 +381,13 @@ exposedSellTDSTLevel := activeSellTDST.active ? activeSellTDST.level : na
 // ----------------------------------------------------------------------------
 if enableOpposingSetupCancel
     if sellSetupCompletedThisBar and buyCountdown.active and not buyCountdown.complete
-        resetBuyCountdown("opposing setup")
+        lastEventText := "Buy CD canceled: opposing setup"
+        clearCountdown(buyCountdown)
+        array.clear(buyCountdownBars)
     if buySetupCompletedThisBar and sellCountdown.active and not sellCountdown.complete
-        resetSellCountdown("opposing setup")
+        lastEventText := "Sell CD canceled: opposing setup"
+        clearCountdown(sellCountdown)
+        array.clear(sellCountdownBars)
 
 // ----------------------------------------------------------------------------
 // 5.8  RECYCLE — size-based  (§3.11.2)
@@ -434,10 +402,14 @@ recycleHit(float newSize, float oldSize) =>
 if enableRecycle
     if buySetupCompletedThisBar and buyCountdown.active and not buyCountdown.complete
         if recycleHit(buySetup.size, lastBuySetupSize)
-            resetBuyCountdown("recycle (size " + str.tostring(buySetup.size / lastBuySetupSize * 100, "#.#") + "%)")
+            lastEventText := "Buy CD canceled: recycle (size " + str.tostring(buySetup.size / lastBuySetupSize * 100, "#.#") + "%)"
+            clearCountdown(buyCountdown)
+            array.clear(buyCountdownBars)
     if sellSetupCompletedThisBar and sellCountdown.active and not sellCountdown.complete
         if recycleHit(sellSetup.size, lastSellSetupSize)
-            resetSellCountdown("recycle (size " + str.tostring(sellSetup.size / lastSellSetupSize * 100, "#.#") + "%)")
+            lastEventText := "Sell CD canceled: recycle (size " + str.tostring(sellSetup.size / lastSellSetupSize * 100, "#.#") + "%)"
+            clearCountdown(sellCountdown)
+            array.clear(sellCountdownBars)
 
 // Stash sizes after recycle decisions so the *next* same-direction Setup compares
 // against the most recent one.
@@ -456,14 +428,18 @@ if enable22BarRecycle
     if buySetup.complete and buySetupCond and not buySetupCompletedThisBar
         buySetup.extensionCount := buySetup.extensionCount + 1
         if (setupLength + buySetup.extensionCount) >= 22 and buyCountdown.active and not buyCountdown.complete
-            resetBuyCountdown("22-bar extension")
+            lastEventText := "Buy CD canceled: 22-bar extension"
+            clearCountdown(buyCountdown)
+            array.clear(buyCountdownBars)
             buySetup.extensionCount := 0
     if buySetup.complete and not buySetupCond and not buySetupCompletedThisBar
         buySetup.extensionCount := 0
     if sellSetup.complete and sellSetupCond and not sellSetupCompletedThisBar
         sellSetup.extensionCount := sellSetup.extensionCount + 1
         if (setupLength + sellSetup.extensionCount) >= 22 and sellCountdown.active and not sellCountdown.complete
-            resetSellCountdown("22-bar extension")
+            lastEventText := "Sell CD canceled: 22-bar extension"
+            clearCountdown(sellCountdown)
+            array.clear(sellCountdownBars)
             sellSetup.extensionCount := 0
     if sellSetup.complete and not sellSetupCond and not sellSetupCompletedThisBar
         sellSetup.extensionCount := 0
@@ -588,11 +564,15 @@ if enableTDSTCancel
     if buyCountdown.active and not buyCountdown.complete and activeSellTDST.active
         breakHit = tdstBreakRule == "intrabar" ? th0 > activeSellTDST.level : (th0 > activeSellTDST.level and close > activeSellTDST.level)
         if breakHit
-            resetBuyCountdown("TDST violation")
+            lastEventText := "Buy CD canceled: TDST violation"
+            clearCountdown(buyCountdown)
+            array.clear(buyCountdownBars)
     if sellCountdown.active and not sellCountdown.complete and activeBuyTDST.active
         breakHit = tdstBreakRule == "intrabar" ? tl0 < activeBuyTDST.level : (tl0 < activeBuyTDST.level and close < activeBuyTDST.level)
         if breakHit
-            resetSellCountdown("TDST violation")
+            lastEventText := "Sell CD canceled: TDST violation"
+            clearCountdown(sellCountdown)
+            array.clear(sellCountdownBars)
 
 // Detect simple TDST breaks for alert purposes (any close-confirmed break).
 buyTDSTResistanceBroken  = activeBuyTDST.active  and close > activeBuyTDST.level  and close[1] <= activeBuyTDST.level
@@ -668,9 +648,6 @@ if buy13QualifiedThisBar and showRiskLevel
         if not na(buy12BarBox)
             box.delete(buy12BarBox)
         buy12BarBox := box.new(bar_index, low, bar_index + 12, buyCountdown.riskLevel, border_color=color.new(buySetupColor, 70), bgcolor=color.new(buySetupColor, 92))
-    if showRiskZone
-        // Risk-zone shading (overrides 12-bar box when both on).
-        na
 
 if sell13QualifiedThisBar and showRiskLevel
     if not na(sellRiskLine)
