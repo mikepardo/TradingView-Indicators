@@ -187,6 +187,41 @@ int confirmFailDir = 0
 // on a CLOSED bar — no intrabar flicker, no premature alerts.
 if barstate.isconfirmed
     if newConsolidation
+        // A preview left un-finalized by the previous coil (it ended while a
+        // break of it was still confirming) is frozen into a zone NOW, from
+        // that coil's still-unreset boundaries — otherwise a qualified coil
+        // would silently leave no S/R zone at all.
+        if formingActive
+            if endedCoilAge >= minCoilBars and not na(coilEndBar)
+                box.set_top(formingBox, coilHigh)
+                box.set_bottom(formingBox, coilLow)
+                box.set_right(formingBox, coilEndBar)
+                box.set_border_color(formingBox, color.new(color.gray, 20))
+                box.set_border_style(formingBox, line.style_solid)
+                int tt = 0
+                int bt = 0
+                int startOff = bar_index - coilEndBar
+                int endOff   = math.min(bar_index - box.get_left(formingBox), 400)
+                if startOff <= endOff
+                    for i = startOff to endOff
+                        if high[i] >= coilHigh - touchBand
+                            tt += 1
+                        if low[i] <= coilLow + touchBand
+                            bt += 1
+                string zTxt = "R×" + str.tostring(tt) + "  S×" + str.tostring(bt)
+                box.set_text(formingBox, zTxt)
+                box.set_text_size(formingBox, size.tiny)
+                box.set_text_color(formingBox, color.new(color.white, 25))
+                box.set_text_halign(formingBox, text.align_left)
+                box.set_text_valign(formingBox, text.align_top)
+                box tb = showZoneBands ? box.new(box.get_left(formingBox), coilHigh, coilEndBar, math.max(math.min(coilBodyHigh, coilHigh - touchBand), coilLow), border_color = na, bgcolor = resBandColor) : na
+                box bb = showZoneBands ? box.new(box.get_left(formingBox), math.min(math.max(coilBodyLow, coilLow + touchBand), coilHigh), coilEndBar, coilLow, border_color = na, bgcolor = supBandColor) : na
+                f_pushZone(formingBox, tb, bb, coilHigh, coilLow, 0, zTxt)
+            else
+                box.delete(formingBox)
+            formingBox := na
+            formingActive := false
+
         armed := true
         coilHigh := rangeHigh
         coilLow  := rangeLow
@@ -303,12 +338,15 @@ var bool formingActive = false
 var int  formingCoilStart = na  // which coil the preview box belongs to
 
 // Frozen zones. zStates: 0 = unresolved (still live S/R), 1 = broken up, 2 = broken down.
-var array<box>   zBoxes    = array.new<box>()
-var array<box>   zTopBands = array.new<box>()
-var array<box>   zBotBands = array.new<box>()
-var array<float> zTops     = array.new<float>()
-var array<float> zBots     = array.new<float>()
-var array<int>   zStates   = array.new<int>()
+// zTexts keeps each zone's base "R×n S×m" text: Pine has no box.get_text, so
+// outcome stamps are rebuilt from here instead of appended blindly.
+var array<box>    zBoxes    = array.new<box>()
+var array<box>    zTopBands = array.new<box>()
+var array<box>    zBotBands = array.new<box>()
+var array<float>  zTops     = array.new<float>()
+var array<float>  zBots     = array.new<float>()
+var array<int>    zStates   = array.new<int>()
+var array<string> zTexts    = array.new<string>()
 
 // Broken-level "flip" lines (broken resistance = new support, and vice versa).
 var array<line> fLines = array.new<line>()
@@ -338,13 +376,14 @@ var int   flipBar    = na
 var bool  retestDone = false
 var line  flipLine   = na
 
-f_pushZone(box _zone, box _tb, box _bb, float _top, float _bot, int _st) =>
+f_pushZone(box _zone, box _tb, box _bb, float _top, float _bot, int _st, string _txt) =>
     array.push(zBoxes, _zone)
     array.push(zTopBands, _tb)
     array.push(zBotBands, _bb)
     array.push(zTops, _top)
     array.push(zBots, _bot)
     array.push(zStates, _st)
+    array.push(zTexts, _txt)
     if array.size(zBoxes) > maxZonesKept
         box.delete(array.shift(zBoxes))
         box.delete(array.shift(zTopBands))
@@ -352,6 +391,7 @@ f_pushZone(box _zone, box _tb, box _bb, float _top, float _bot, int _st) =>
         array.shift(zTops)
         array.shift(zBots)
         array.shift(zStates)
+        array.shift(zTexts)
 
 f_pushFlipLine(line _ln) =>
     array.push(fLines, _ln)
@@ -400,18 +440,22 @@ if confirmedBreakoutUp or confirmedBreakoutDown
                 if not na(lastBox)
                     box.set_border_color(lastBox, zoneBorder)
                     box.set_right(lastBox, pendBreakBar)
+                    // rebuild from the stored base text so any earlier stamp
+                    // from the maintenance loop is replaced, not appended to
+                    box.set_text(lastBox, array.get(zTexts, lastIdx) + (up ? "  ▲ broke up" : "  ▼ broke down"))
                     curZoneBox := lastBox
                 if not na(lastTb)
                     box.set_right(lastTb, pendBreakBar)
                 if not na(lastBb)
                     box.set_right(lastBb, pendBreakBar)
         if not reusedZone
-            box zb = box.new(pendStart, pendHigh, pendBreakBar, pendLow, border_color = zoneBorder, border_width = 1, bgcolor = boxColor, text = "R×" + str.tostring(pendTopTouches) + "  S×" + str.tostring(pendBotTouches), text_size = size.tiny, text_color = color.new(color.white, 25), text_halign = text.align_left, text_valign = up ? text.align_bottom : text.align_top)
-            // bands span the wick-to-body area (at least touchBand thick):
-            // S/R is the zone between the extreme wicks and the extreme bodies
-            box tb = showZoneBands ? box.new(pendStart, pendHigh, pendBreakBar, math.min(pendBodyHigh, pendHigh - touchBand), border_color = na, bgcolor = resBandColor) : na
-            box bb = showZoneBands ? box.new(pendStart, math.max(pendBodyLow, pendLow + touchBand), pendBreakBar, pendLow, border_color = na, bgcolor = supBandColor) : na
-            f_pushZone(zb, tb, bb, pendHigh, pendLow, up ? 1 : 2)
+            string zoneTxt = "R×" + str.tostring(pendTopTouches) + "  S×" + str.tostring(pendBotTouches)
+            box zb = box.new(pendStart, pendHigh, pendBreakBar, pendLow, border_color = zoneBorder, border_width = 1, bgcolor = boxColor, text = zoneTxt, text_size = size.tiny, text_color = color.new(color.white, 25), text_halign = text.align_left, text_valign = up ? text.align_bottom : text.align_top)
+            // bands span the wick-to-body area (at least touchBand thick,
+            // never spilling past the opposite zone edge on ultra-tight coils)
+            box tb = showZoneBands ? box.new(pendStart, pendHigh, pendBreakBar, math.max(math.min(pendBodyHigh, pendHigh - touchBand), pendLow), border_color = na, bgcolor = resBandColor) : na
+            box bb = showZoneBands ? box.new(pendStart, math.min(math.max(pendBodyLow, pendLow + touchBand), pendHigh), pendBreakBar, pendLow, border_color = na, bgcolor = supBandColor) : na
+            f_pushZone(zb, tb, bb, pendHigh, pendLow, up ? 1 : 2, zoneTxt)
             curZoneBox := zb
 
     // ---- broken level extended forward: resistance flips to support (and vice versa)
@@ -556,19 +600,22 @@ if planDir != 0 and showTradePlan
     label.set_x(planT2Lbl, bar_index + 1)
 
 // ============================== FORMING BOX (LIVE COIL PREVIEW) ==============================
+// Gated on `armed`: once a coil's breakout has signaled, the spent coil gets
+// no new preview (and thus can never be finalized as a duplicate zone), even
+// if the wick range technically stays tight after a body-basis breakout.
 if showConsolidationBox
-    if isConsolidating and dir == 0 and not (sigBreakUp or sigBreakDown)
+    if isConsolidating and armed and dir == 0 and not (sigBreakUp or sigBreakDown)
         // a leftover preview from an older coil (its break attempt died after
         // a new coil had already formed) must not be recycled across coils
         if formingActive and formingCoilStart != coilStartBar
             box.delete(formingBox)
             formingBox := na
             formingActive := false
-        if not formingActive
+        if not formingActive and not na(coilStartBar)
             formingBox := box.new(coilStartBar - lookbackPeriod, coilHigh, bar_index, coilLow, border_color = color.new(color.blue, 0), border_style = line.style_dashed, bgcolor = boxColor)
             formingActive := true
             formingCoilStart := coilStartBar
-        else
+        else if formingActive
             // expand-only: the preview can widen but never shrinks, matching
             // the boundaries a breakout will actually be tested against
             box.set_top(formingBox, coilHigh)
@@ -603,14 +650,15 @@ if barstate.isconfirmed and formingActive and not isConsolidating and dir == 0 a
                     tt += 1
                 if low[i] <= coilLow + touchBand
                     bt += 1
-        box.set_text(formingBox, "R×" + str.tostring(tt) + "  S×" + str.tostring(bt))
+        string zTxt = "R×" + str.tostring(tt) + "  S×" + str.tostring(bt)
+        box.set_text(formingBox, zTxt)
         box.set_text_size(formingBox, size.tiny)
         box.set_text_color(formingBox, color.new(color.white, 25))
         box.set_text_halign(formingBox, text.align_left)
         box.set_text_valign(formingBox, text.align_top)
-        box tb = showZoneBands ? box.new(box.get_left(formingBox), coilHigh, rightBar, math.min(coilBodyHigh, coilHigh - touchBand), border_color = na, bgcolor = resBandColor) : na
-        box bb = showZoneBands ? box.new(box.get_left(formingBox), math.max(coilBodyLow, coilLow + touchBand), rightBar, coilLow, border_color = na, bgcolor = supBandColor) : na
-        f_pushZone(formingBox, tb, bb, coilHigh, coilLow, 0)
+        box tb = showZoneBands ? box.new(box.get_left(formingBox), coilHigh, rightBar, math.max(math.min(coilBodyHigh, coilHigh - touchBand), coilLow), border_color = na, bgcolor = resBandColor) : na
+        box bb = showZoneBands ? box.new(box.get_left(formingBox), math.min(math.max(coilBodyLow, coilLow + touchBand), coilHigh), rightBar, coilLow, border_color = na, bgcolor = supBandColor) : na
+        f_pushZone(formingBox, tb, bb, coilHigh, coilLow, 0, zTxt)
     else
         // coil too brief to matter — discard the preview
         box.delete(formingBox)
@@ -633,16 +681,21 @@ if barstate.isconfirmed and array.size(zBoxes) > 0
                     box.set_right(bandTop, bar_index)
                 if not na(bandBot)
                     box.set_right(bandBot, bar_index)
-            if close > zoneTop + touchBand
-                array.set(zStates, i, 1)
-                if not na(zoneBx)
-                    box.set_border_color(zoneBx, color.new(color.green, 0))
-                    box.set_text(zoneBx, box.get_text(zoneBx) + "  ▲ broke up")
-            else if close < zoneBot - touchBand
-                array.set(zStates, i, 2)
-                if not na(zoneBx)
-                    box.set_border_color(zoneBx, color.new(color.red, 0))
-                    box.set_text(zoneBx, box.get_text(zoneBx) + "  ▼ broke down")
+            // While the newest zone's break is being confirmed (or is still
+            // inside the grace window), its fate belongs to the confirmation
+            // machinery — a single touchBand poke must not pre-stamp it.
+            bool reservedForMachine = i == array.size(zBoxes) - 1 and (dir != 0 or (not na(coilEndBar) and bar_index - coilEndBar <= graceBars))
+            if not reservedForMachine
+                if close > zoneTop + touchBand
+                    array.set(zStates, i, 1)
+                    if not na(zoneBx)
+                        box.set_border_color(zoneBx, color.new(color.green, 0))
+                        box.set_text(zoneBx, array.get(zTexts, i) + "  ▲ broke up")
+                else if close < zoneBot - touchBand
+                    array.set(zStates, i, 2)
+                    if not na(zoneBx)
+                        box.set_border_color(zoneBx, color.new(color.red, 0))
+                        box.set_text(zoneBx, array.get(zTexts, i) + "  ▼ broke down")
 
 // ============================== SIGNALS / PLOTS ==============================
 plotshape(sigBreakUp,    title = "Breakout Up",       location = location.belowbar, color = color.green,               style = shape.triangleup,   size = size.normal, text = "BREAK")
@@ -665,10 +718,13 @@ bgcolor(isConsolidating ? color.new(color.yellow, 90) : dir != 0 ? color.new(col
 
 // Plotted S/R = the expand-only TRADED boundaries (frozen at pend* while a
 // break is being confirmed). No more stair-step creep from the sliding window.
+// A spent coil (armed consumed by its signal) stops painting levels — the
+// flip line and zone box carry the structure from there.
+bool  coilLive    = (isConsolidating and armed) or dir != 0
 float displayHigh = dir != 0 ? pendTopLvl : (useCloseBasis ? coilBodyHigh : coilHigh)
 float displayLow  = dir != 0 ? pendBotLvl : (useCloseBasis ? coilBodyLow  : coilLow)
-plot(isConsolidating or dir != 0 ? displayHigh : na, "Resistance", color = color.red,   style = plot.style_linebr, linewidth = 2)
-plot(isConsolidating or dir != 0 ? displayLow  : na, "Support",    color = color.green, style = plot.style_linebr, linewidth = 2)
+plot(coilLive ? displayHigh : na, "Resistance", color = color.red,   style = plot.style_linebr, linewidth = 2)
+plot(coilLive ? displayLow  : na, "Support",    color = color.green, style = plot.style_linebr, linewidth = 2)
 
 // ============================== ALERTS ==============================
 alertcondition(sigBreakUp,    title = "Bullish Breakout",     message = "Confirmed bullish breakout on {{ticker}} ({{interval}})")
@@ -696,13 +752,13 @@ if barstate.islast
     table.cell(infoTable, 0, 3, "Threshold", text_color = tblLabelColor)
     table.cell(infoTable, 1, 3, na(effectiveThreshold) ? "n/a" : str.tostring(effectiveThreshold, "#.##") + "%", text_color = colThreshold)
     table.cell(infoTable, 0, 4, "Resistance", text_color = tblLabelColor)
-    table.cell(infoTable, 1, 4, na(displayHigh) ? "n/a" : str.tostring(displayHigh, format.mintick), text_color = colResistance)
+    table.cell(infoTable, 1, 4, not coilLive or na(displayHigh) ? "—" : str.tostring(displayHigh, format.mintick), text_color = colResistance)
     table.cell(infoTable, 0, 5, "Support", text_color = tblLabelColor)
-    table.cell(infoTable, 1, 5, na(displayLow) ? "n/a" : str.tostring(displayLow, format.mintick), text_color = colSupport)
+    table.cell(infoTable, 1, 5, not coilLive or na(displayLow) ? "—" : str.tostring(displayLow, format.mintick), text_color = colSupport)
 
     // live zone strength (touch counts against the current levels)
     string strengthTxt = "—"
-    if (isConsolidating or dir != 0) and not na(displayHigh) and not na(touchBand) and not na(coilStartBar)
+    if coilLive and not na(displayHigh) and not na(touchBand) and not na(coilStartBar)
         int tt = 0
         int bt = 0
         int span = math.min(bar_index - (coilStartBar - lookbackPeriod), 400)
