@@ -178,6 +178,73 @@ var int   pendBreakBar = na
 var int   pendTopTouches = 0
 var int   pendBotTouches = 0
 
+// ============================== ZONE / PLAN STORAGE ==============================
+// (declared before the state machine below, which finalizes orphaned previews)
+var box  formingBox    = na
+var bool formingActive = false
+var int  formingCoilStart = na  // which coil the preview box belongs to
+
+// Frozen zones. zStates: 0 = unresolved (still live S/R), 1 = broken up, 2 = broken down.
+// zTexts keeps each zone's base "R×n S×m" text: Pine has no box.get_text, so
+// outcome stamps are rebuilt from here instead of appended blindly.
+var array<box>    zBoxes    = array.new<box>()
+var array<box>    zTopBands = array.new<box>()
+var array<box>    zBotBands = array.new<box>()
+var array<float>  zTops     = array.new<float>()
+var array<float>  zBots     = array.new<float>()
+var array<int>    zStates   = array.new<int>()
+var array<string> zTexts    = array.new<string>()
+
+// Broken-level "flip" lines (broken resistance = new support, and vice versa).
+var array<line> fLines = array.new<line>()
+
+// Current trade plan (stop/target tracking).
+var int    planDir   = 0
+var float  planEntry = na
+var float  planStop  = na
+var float  planT1    = na
+var float  planT2    = na
+var int    planBar   = na
+var bool   planT1Hit = false
+var string planStatus = "—"
+var line   planStopLine = na
+var line   planT1Line   = na
+var line   planT2Line   = na
+var label  planStopLbl  = na
+var label  planT1Lbl    = na
+var label  planT2Lbl    = na
+var box    curZoneBox   = na
+
+// Current flip-level tracking (retest entries + failed-break warning).
+// Deliberately independent of the plan: a retest can fire even after T2 tags.
+var int   flipDir    = 0
+var float flipLevel  = na
+var int   flipBar    = na
+var bool  retestDone = false
+var line  flipLine   = na
+
+f_pushZone(box _zone, box _tb, box _bb, float _top, float _bot, int _st, string _txt) =>
+    array.push(zBoxes, _zone)
+    array.push(zTopBands, _tb)
+    array.push(zBotBands, _bb)
+    array.push(zTops, _top)
+    array.push(zBots, _bot)
+    array.push(zStates, _st)
+    array.push(zTexts, _txt)
+    if array.size(zBoxes) > maxZonesKept
+        box.delete(array.shift(zBoxes))
+        box.delete(array.shift(zTopBands))
+        box.delete(array.shift(zBotBands))
+        array.shift(zTops)
+        array.shift(zBots)
+        array.shift(zStates)
+        array.shift(zTexts)
+
+f_pushFlipLine(line _ln) =>
+    array.push(fLines, _ln)
+    if array.size(fLines) > maxZonesKept
+        line.delete(array.shift(fLines))
+
 // Set when a confirmation attempt dies this bar (+1 = up-track failed,
 // -1 = down-track failed): gates same-direction re-entry and prints a marker.
 int confirmFailDir = 0
@@ -331,72 +398,6 @@ confirmedBreakoutDown = dir == -1 and confirmCnt == breakoutConfirmation and bar
 sigFirstBreakUp   = barstate.isconfirmed and dir == 1  and pendBreakBar == bar_index and not confirmedBreakoutUp
 sigFirstBreakDown = barstate.isconfirmed and dir == -1 and pendBreakBar == bar_index and not confirmedBreakoutDown
 sigConfirmFailed  = confirmFailDir != 0
-
-// ============================== ZONE / PLAN STORAGE ==============================
-var box  formingBox    = na
-var bool formingActive = false
-var int  formingCoilStart = na  // which coil the preview box belongs to
-
-// Frozen zones. zStates: 0 = unresolved (still live S/R), 1 = broken up, 2 = broken down.
-// zTexts keeps each zone's base "R×n S×m" text: Pine has no box.get_text, so
-// outcome stamps are rebuilt from here instead of appended blindly.
-var array<box>    zBoxes    = array.new<box>()
-var array<box>    zTopBands = array.new<box>()
-var array<box>    zBotBands = array.new<box>()
-var array<float>  zTops     = array.new<float>()
-var array<float>  zBots     = array.new<float>()
-var array<int>    zStates   = array.new<int>()
-var array<string> zTexts    = array.new<string>()
-
-// Broken-level "flip" lines (broken resistance = new support, and vice versa).
-var array<line> fLines = array.new<line>()
-
-// Current trade plan (stop/target tracking).
-var int    planDir   = 0
-var float  planEntry = na
-var float  planStop  = na
-var float  planT1    = na
-var float  planT2    = na
-var int    planBar   = na
-var bool   planT1Hit = false
-var string planStatus = "—"
-var line   planStopLine = na
-var line   planT1Line   = na
-var line   planT2Line   = na
-var label  planStopLbl  = na
-var label  planT1Lbl    = na
-var label  planT2Lbl    = na
-var box    curZoneBox   = na
-
-// Current flip-level tracking (retest entries + failed-break warning).
-// Deliberately independent of the plan: a retest can fire even after T2 tags.
-var int   flipDir    = 0
-var float flipLevel  = na
-var int   flipBar    = na
-var bool  retestDone = false
-var line  flipLine   = na
-
-f_pushZone(box _zone, box _tb, box _bb, float _top, float _bot, int _st, string _txt) =>
-    array.push(zBoxes, _zone)
-    array.push(zTopBands, _tb)
-    array.push(zBotBands, _bb)
-    array.push(zTops, _top)
-    array.push(zBots, _bot)
-    array.push(zStates, _st)
-    array.push(zTexts, _txt)
-    if array.size(zBoxes) > maxZonesKept
-        box.delete(array.shift(zBoxes))
-        box.delete(array.shift(zTopBands))
-        box.delete(array.shift(zBotBands))
-        array.shift(zTops)
-        array.shift(zBots)
-        array.shift(zStates)
-        array.shift(zTexts)
-
-f_pushFlipLine(line _ln) =>
-    array.push(fLines, _ln)
-    if array.size(fLines) > maxZonesKept
-        line.delete(array.shift(fLines))
 
 // ============================== PER-BAR SIGNAL FLAGS ==============================
 bool sigBreakUp    = false
