@@ -286,16 +286,20 @@ def simulate_v6(bars, lookback=20, confirm_bars=2, mode="adaptive",
                 compression=0.6, baseline_len=100, fixed_thresh=5.0,
                 atr_buf_mult=0.0, use_vol_filter=False, vol_ma_len=20,
                 stop_mode="midpoint", retest_band_atr=0.25, retest_window=20,
-                t1_mult=1.0, t2_mult=2.0, min_coil_bars=3, grace_bars=5):
+                t1_mult=1.0, t2_mult=2.0, min_coil_bars=3, grace_bars=5,
+                use_close_basis=False):
     """v6: identical detection core + frozen zone levels captured at the raw
     break, retest entry signals, failed-breakout exit, stop/target tracking."""
     highs = RollingWindow(lookback)
     lows = RollingWindow(lookback)
+    body_highs = RollingWindow(lookback)
+    body_lows = RollingWindow(lookback)
     baseline = RollingWindow(baseline_len)
     vol_ma = RollingWindow(vol_ma_len)
     atr = RMA(14)
 
     hh_prev = ll_prev = math.nan
+    bh_prev = bl_prev = math.nan
     prev_close = math.nan
     dir_ = 0
     confirm_cnt = 0
@@ -306,8 +310,10 @@ def simulate_v6(bars, lookback=20, confirm_bars=2, mode="adaptive",
     coil_age = 0
     coil_age_prev = 0
     ended_coil_age = 0
-    coil_high = coil_low = math.nan   # expand-only coil-extent levels
+    coil_high = coil_low = math.nan       # expand-only wick extremes
+    coil_body_high = coil_body_low = math.nan
     coil_end = None
+    locked_thresh = None                  # anti-droop threshold lock
 
     # trade plan state (stop/target tracking)
     plan_dir = 0
@@ -326,9 +332,14 @@ def simulate_v6(bars, lookback=20, confirm_bars=2, mode="adaptive",
     for i, b in enumerate(bars):
         highs.push(b.h)
         lows.push(b.l)
+        body_highs.push(max(b.o, b.c))
+        body_lows.push(min(b.o, b.c))
         hh_raw = highs.highest()
         ll_raw = lows.lowest()
+        bh_raw = body_highs.highest()
+        bl_raw = body_lows.lowest()
         range_high, range_low = hh_prev, ll_prev
+        body_high, body_low = bh_prev, bl_prev
 
         if not math.isnan(prev_close):
             tr = max(b.h - b.l, abs(b.h - prev_close), abs(b.l - prev_close))
@@ -344,11 +355,17 @@ def simulate_v6(bars, lookback=20, confirm_bars=2, mode="adaptive",
         baseline.push(range_pct)
         if mode == "adaptive":
             base = baseline.sma()
-            eff_thresh = base * compression if not math.isnan(base) else math.nan
+            raw_thresh = base * compression if not math.isnan(base) else math.nan
         else:
-            eff_thresh = fixed_thresh
+            raw_thresh = fixed_thresh
+        # anti-droop lock: judge an in-progress coil against its onset threshold
+        eff_thresh = locked_thresh if (was_consolidating and locked_thresh is not None) else raw_thresh
         is_cons = (not math.isnan(range_pct) and not math.isnan(eff_thresh)
                    and range_pct <= eff_thresh)
+        if is_cons and not was_consolidating:
+            locked_thresh = raw_thresh
+        if not is_cons:
+            locked_thresh = None
         coil_age = (coil_age + 1) if is_cons and was_consolidating else (1 if is_cons else 0)
         if not is_cons and was_consolidating:
             ended_coil_age = coil_age_prev
@@ -358,21 +375,26 @@ def simulate_v6(bars, lookback=20, confirm_bars=2, mode="adaptive",
         # expand-only coil-extent levels (frozen once the coil ends)
         if is_cons and not was_consolidating:
             coil_high, coil_low = range_high, range_low
+            coil_body_high, coil_body_low = body_high, body_low
             coil_end = None
             # fresh coil supersedes any confirmation still in progress
             dir_, confirm_cnt, broken_level = 0, 0, math.nan
         elif is_cons:
             coil_high = max(coil_high, range_high)
             coil_low = min(coil_low, range_low)
+            coil_body_high = max(coil_body_high, body_high)
+            coil_body_low = min(coil_body_low, body_low)
+        coil_top_lvl = coil_body_high if use_close_basis else coil_high
+        coil_bot_lvl = coil_body_low if use_close_basis else coil_low
 
         buffer = (atr_buf_mult * atr_val) if not math.isnan(atr_val) else 0.0
         vol_ok = (not use_vol_filter) or (not math.isnan(vma) and b.v > vma)
         in_break_window = is_cons or (coil_end is not None and i - coil_end <= grace_bars)
         age_ok = (coil_age >= min_coil_bars) if is_cons else (ended_coil_age >= min_coil_bars)
         raw_up = (in_break_window and age_ok and
-                  not math.isnan(coil_high) and b.c > coil_high + buffer and vol_ok)
+                  not math.isnan(coil_top_lvl) and b.c > coil_top_lvl + buffer and vol_ok)
         raw_dn = (in_break_window and age_ok and
-                  not math.isnan(coil_low) and b.c < coil_low - buffer and vol_ok)
+                  not math.isnan(coil_bot_lvl) and b.c < coil_bot_lvl - buffer and vol_ok)
 
         if is_cons and not was_consolidating:
             armed = True
@@ -397,11 +419,11 @@ def simulate_v6(bars, lookback=20, confirm_bars=2, mode="adaptive",
         # but never re-enters the direction that just failed.
         if dir_ == 0:
             if armed and raw_up and reset_from != 1:
-                dir_, broken_level, confirm_cnt = 1, coil_high, 1
-                saved_high, saved_low = coil_high, coil_low
+                dir_, broken_level, confirm_cnt = 1, coil_top_lvl, 1
+                saved_high, saved_low = coil_top_lvl, coil_bot_lvl
             elif armed and raw_dn and reset_from != -1:
-                dir_, broken_level, confirm_cnt = -1, coil_low, 1
-                saved_high, saved_low = coil_high, coil_low
+                dir_, broken_level, confirm_cnt = -1, coil_bot_lvl, 1
+                saved_high, saved_low = coil_top_lvl, coil_bot_lvl
 
         conf_up = dir_ == 1 and confirm_cnt == confirm_bars
         conf_dn = dir_ == -1 and confirm_cnt == confirm_bars
@@ -485,6 +507,7 @@ def simulate_v6(bars, lookback=20, confirm_bars=2, mode="adaptive",
                 flip_dir = 0
 
         hh_prev, ll_prev = hh_raw, ll_raw
+        bh_prev, bl_prev = bh_raw, bl_raw
         prev_close = b.c
         was_consolidating = is_cons
 

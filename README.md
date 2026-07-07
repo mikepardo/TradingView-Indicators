@@ -27,6 +27,16 @@ signals plus full trade management:
   through the level, stop-hit, and T1/T2 target tags. v5 had no exits at all.
 - **Close-confirmed, non-repainting** — all state changes are gated on
   `barstate.isconfirmed`; nothing prints or alerts intrabar.
+- **Selectable level basis** — breakout levels from wick extremes (classic,
+  conservative) or body extremes (immune to one-off spike wicks, earlier
+  entries); the shaded bands show the wick-to-body area either way.
+- **Anti-droop threshold lock** — an in-progress coil is judged against the
+  threshold captured at its onset, so the adaptive baseline can't chase the
+  coil's own tightness down and flicker it off/on (which re-armed duplicate
+  signals in v5).
+- **Process markers** — a dot on the unconfirmed first break and a gray ✕
+  when a confirmation attempt dies, so the chart shows the full story around
+  each signal.
 
 `consolidation_breakout_detector_v5.pine` is the previous version, kept for
 reference.
