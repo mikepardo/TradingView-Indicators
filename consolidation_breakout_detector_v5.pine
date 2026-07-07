@@ -1,0 +1,185 @@
+//@version=6
+indicator("Consolidation & Breakout Detector v5", overlay = true, max_boxes_count = 500)
+
+// ============================== ABOUT THIS SCRIPT ==============================
+// Informational fields. Their values are unused — each one's detail lives in its
+// tooltip (hover the ⓘ icon next to it in the settings panel).
+aboutOverview   = input.string("Coil detection + confirmed breakout signals", "📖  Overview", options = ["Coil detection + confirmed breakout signals"], group = "ℹ️ About This Script", tooltip = "CONSOLIDATION & BREAKOUT DETECTOR v5\n\nFinds periods where price coils into a tight range, then flags confirmed breakouts out of that range.\n\nIt shades the coiling phase, draws the consolidation zone with support/resistance, prints a triangle when a breakout is confirmed, and shows a live status table.\n\nTwo detection engines are built in: an ADAPTIVE one that auto-scales to any symbol or timeframe, and a FIXED-percent one (the original behavior).")
+aboutHowItWorks = input.string("Adaptive or fixed range · close-confirmed breaks", "⚙️  How It Works", options = ["Adaptive or fixed range · close-confirmed breaks"], group = "ℹ️ About This Script", tooltip = "DETECTION\n• The high-to-low range is measured over the Lookback window, evaluated on the PRIOR bar so a breakout candle can't distort the very level it is breaking.\n• Adaptive mode: the range is 'tight' when it is below Compression Factor × its own recent average range (Volatility Baseline Length). This adapts across instruments and timeframes.\n• Fixed mode: the range is 'tight' when it is below a set % of price.\n\nBREAKOUT\n• A raw break = a close beyond the frozen range edge.\n• It must hold for N closes (Breakout Confirmation Bars) before a signal fires.\n• Optional ATR buffer and volume filter screen out weak breaks.\n• Only ONE signal per consolidation — it re-arms after a fresh range forms, so a trend doesn't spam signals.")
+aboutReading    = input.string("Yellow = coiling · box = zone · ▲/▼ = breakout", "👁️  Reading The Chart", options = ["Yellow = coiling · box = zone · ▲/▼ = breakout"], group = "ℹ️ About This Script", tooltip = "ON THE CHART\n• Yellow background = price is currently consolidating.\n• Blue box = the consolidation zone. Its red top = resistance, green bottom = support.\n• Green ▲ BREAK below a bar = confirmed bullish breakout.\n• Red ▼ BREAK above a bar = confirmed bearish breakout.\n\nINFO TABLE\nShows live Status, the active Mode, current Range %, the effective Threshold (which moves in adaptive mode), the Resistance / Support levels, and the confirmation count (e.g. 1 / 2).")
+aboutSettings   = input.string("Mode · compression · confirmation · filters", "🎚️  Settings Guide", options = ["Mode · compression · confirmation · filters"], group = "ℹ️ About This Script", tooltip = "KEY CONTROLS\n• Detection Mode — Adaptive (recommended) or Fixed %.\n• Compression Factor — lower = stricter squeeze (adaptive only).\n• Volatility Baseline Length — bars that define 'normal' range (adaptive only).\n• Consolidation Threshold % — the cutoff used by Fixed mode.\n• Lookback Period — the range window length.\n• Breakout Confirmation Bars — more = fewer, later, higher-quality signals.\n• Filters — ATR buffer / volume to cut whipsaws.\n\nNO ZONES SHOWING?\nCompare Range % vs Threshold in the table. In Fixed mode, raise the threshold. In Adaptive mode, raise the Compression Factor.")
+aboutNotes      = input.string("Confirms on close · needs warm-up · not advice", "⚠️  Notes & Limitations", options = ["Confirms on close · needs warm-up · not advice"], group = "ℹ️ About This Script", tooltip = "NOTES & LIMITATIONS\n• Signals confirm on bar CLOSE. The current unclosed bar can still change; confirmed history does NOT repaint.\n• Adaptive mode needs warm-up history (Lookback + Baseline bars) before it begins flagging.\n• A prior spike high stays in the lookback window and can become the resistance the next breakout must clear.\n• No indicator is perfect — expect some false breakouts in choppy markets. The confirmation bars and filters reduce but do not eliminate them.\n• Educational tool only — not financial advice.")
+
+// ============================== DETECTION INPUTS ==============================
+detectionMode = input.string("Adaptive (volatility-relative)", "Detection Mode", options = ["Adaptive (volatility-relative)", "Fixed (% of price)"], group = "Detection", tooltip = "Adaptive = current range vs its own recent average, so it auto-scales across instruments and timeframes. Fixed = an absolute % of price (the original behavior).")
+lookbackPeriod = input.int(20, "Consolidation Lookback Period", minval = 5, maxval = 100, group = "Detection", tooltip = "Window used to measure the high-to-low range.")
+breakoutConfirmation = input.int(2, "Breakout Confirmation Bars", minval = 1, maxval = 5, group = "Detection")
+
+// -- Adaptive-mode controls --
+compressionFactor = input.float(0.6, "Compression Factor (adaptive)", minval = 0.1, maxval = 1.0, step = 0.05, group = "Adaptive Mode", tooltip = "ADAPTIVE MODE ONLY. The current range must be <= this fraction of its recent average range to count as consolidation. Lower = stricter (a tighter squeeze is required). 0.6 = 'range is at most 60% of normal'.")
+volBaselineLength = input.int(100, "Volatility Baseline Length (adaptive)", minval = 20, maxval = 500, group = "Adaptive Mode", tooltip = "ADAPTIVE MODE ONLY. How many bars define 'normal' range. Longer = a smoother, slower-moving baseline.")
+
+// -- Fixed-mode control --
+consolidationThreshold = input.float(5.0, "Consolidation Threshold % (fixed)", minval = 0.5, maxval = 20, step = 0.5, group = "Fixed Mode", tooltip = "FIXED MODE ONLY. Range counts as consolidation when it is <= this % of price.")
+
+// -- Optional breakout-quality filters --
+atrBufferMult = input.float(0.0, "Breakout Buffer (ATR multiple)", minval = 0.0, maxval = 3.0, step = 0.1, group = "Filters", tooltip = "Require the close to clear the level by this many ATRs. Higher = fewer, cleaner signals. 0 = off.")
+useVolFilter  = input.bool(false, "Require Above-Average Volume On Breakout", group = "Filters")
+volMaLength   = input.int(20, "Volume MA Length", minval = 1, group = "Filters")
+
+// -- Display --
+showConsolidationBox = input.bool(true, "Show Consolidation Zones", group = "Display")
+keepOldZones         = input.bool(true, "Keep Past Zones On Chart", group = "Display", tooltip = "Off = only the active zone is drawn.")
+boxColor             = input.color(color.new(color.blue, 80), "Consolidation Zone Color", group = "Display")
+tablePositionInput   = input.string("Top Right", "Info Table Position", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = "Display")
+
+// -- Table colors (each value cell is individually configurable) --
+tblBgColor       = input.color(color.new(color.black, 80), "Table Background", group = "Table Colors")
+tblLabelColor    = input.color(color.white,  "Label Text (left column)", group = "Table Colors")
+colConsolidating = input.color(color.yellow, "Value: Status = Consolidating", group = "Table Colors")
+colBreakingOut   = input.color(color.orange, "Value: Status = Breaking Out", group = "Table Colors")
+colTrending      = input.color(color.lime,   "Value: Status = Trending", group = "Table Colors")
+colMode          = input.color(color.aqua,   "Value: Mode", group = "Table Colors")
+colRange         = input.color(color.white,  "Value: Range %", group = "Table Colors")
+colThreshold     = input.color(color.gray,   "Value: Threshold", group = "Table Colors")
+colResistance    = input.color(color.red,    "Value: Resistance", group = "Table Colors")
+colSupport       = input.color(color.green,  "Value: Support", group = "Table Colors")
+colConfirm       = input.color(color.white,  "Value: Confirm", group = "Table Colors")
+
+// ============================== TABLE POSITION HELPER ==============================
+tablePosition = switch tablePositionInput
+    "Top Left"      => position.top_left
+    "Top Center"    => position.top_center
+    "Top Right"     => position.top_right
+    "Middle Left"   => position.middle_left
+    "Middle Center" => position.middle_center
+    "Middle Right"  => position.middle_right
+    "Bottom Left"   => position.bottom_left
+    "Bottom Center" => position.bottom_center
+    "Bottom Right"  => position.bottom_right
+    => position.top_right
+
+// ============================== RANGE (PRIOR-BAR WINDOW) ==============================
+// Measure the range over the window ENDING AT THE PRIOR BAR ([1]) so the current
+// (potential breakout) bar cannot contaminate the level it is breaking.
+hhRaw = ta.highest(high, lookbackPeriod)
+llRaw = ta.lowest(low,  lookbackPeriod)
+rangeHigh = hhRaw[1]
+rangeLow  = llRaw[1]
+
+avgPrice     = (rangeHigh + rangeLow) / 2
+rangePercent = not na(avgPrice) and avgPrice != 0 ? (rangeHigh - rangeLow) / avgPrice * 100 : na
+
+// ============================== CONSOLIDATION TEST (MODE-DEPENDENT) ==============================
+useAdaptive   = detectionMode == "Adaptive (volatility-relative)"
+baselineRange = ta.sma(rangePercent, volBaselineLength)              // 'normal' range for this instrument
+effectiveThreshold = useAdaptive ? baselineRange * compressionFactor : consolidationThreshold
+isConsolidating = not na(rangePercent) and not na(effectiveThreshold) and rangePercent <= effectiveThreshold
+
+// ============================== BREAKOUT FILTERS (OPTIONAL) ==============================
+atrVal = ta.atr(14)
+buffer = atrBufferMult * atrVal
+volMa  = ta.sma(volume, volMaLength)
+volOk  = not useVolFilter or (not na(volMa) and volume > volMa)
+
+rawBreakUp   = isConsolidating and close > rangeHigh + buffer and volOk
+rawBreakDown = isConsolidating and close < rangeLow  - buffer and volOk
+
+// ============================== CONFIRMATION STATE MACHINE ==============================
+// dir: 0 = idle, 1 = tracking an up-break, -1 = tracking a down-break.
+// armed: only allow a new signal once a FRESH consolidation has formed.
+var int   dir         = 0
+var int   confirmCnt  = 0
+var float brokenLevel = na
+var bool  armed       = false
+
+if isConsolidating and not isConsolidating[1]
+    armed := true
+
+if dir == 0
+    if armed and rawBreakUp
+        dir         := 1
+        brokenLevel := rangeHigh
+        confirmCnt  := 1
+    else if armed and rawBreakDown
+        dir         := -1
+        brokenLevel := rangeLow
+        confirmCnt  := 1
+else if dir == 1
+    if close > brokenLevel
+        confirmCnt += 1
+    else
+        dir := 0
+        confirmCnt := 0
+        brokenLevel := na
+else if dir == -1
+    if close < brokenLevel
+        confirmCnt += 1
+    else
+        dir := 0
+        confirmCnt := 0
+        brokenLevel := na
+
+confirmedBreakoutUp   = dir == 1  and confirmCnt == breakoutConfirmation
+confirmedBreakoutDown = dir == -1 and confirmCnt == breakoutConfirmation
+
+if confirmedBreakoutUp or confirmedBreakoutDown
+    dir := 0
+    confirmCnt := 0
+    armed := false
+
+// ============================== CONSOLIDATION ZONE BOX ==============================
+var box  zoneBox   = na
+var bool boxActive = false
+
+if showConsolidationBox
+    if isConsolidating
+        if na(zoneBox) or not boxActive
+            if not keepOldZones and not na(zoneBox)
+                box.delete(zoneBox)
+            zoneBox := box.new(bar_index - lookbackPeriod, rangeHigh, bar_index, rangeLow, border_color = color.new(color.blue, 0), bgcolor = boxColor)
+            boxActive := true
+        else
+            box.set_right(zoneBox,  bar_index)
+            box.set_top(zoneBox,    rangeHigh)
+            box.set_bottom(zoneBox, rangeLow)
+    else
+        boxActive := false
+        if not keepOldZones and not na(zoneBox)
+            box.delete(zoneBox)
+            zoneBox := na
+
+// ============================== SIGNALS / PLOTS ==============================
+plotshape(confirmedBreakoutUp,   title = "Breakout Up",   location = location.belowbar, color = color.green, style = shape.triangleup,   size = size.normal, text = "BREAK")
+plotshape(confirmedBreakoutDown, title = "Breakout Down", location = location.abovebar, color = color.red,   style = shape.triangledown, size = size.normal, text = "BREAK")
+
+bgcolor(isConsolidating ? color.new(color.yellow, 90) : na, title = "Consolidation Background")
+
+plot(isConsolidating ? rangeHigh : na, "Resistance", color = color.red,   style = plot.style_linebr, linewidth = 2)
+plot(isConsolidating ? rangeLow  : na, "Support",    color = color.green, style = plot.style_linebr, linewidth = 2)
+
+// ============================== ALERTS ==============================
+alertcondition(confirmedBreakoutUp,   title = "Bullish Breakout", message = "Confirmed bullish breakout on {{ticker}} ({{interval}})")
+alertcondition(confirmedBreakoutDown, title = "Bearish Breakout", message = "Confirmed bearish breakout on {{ticker}} ({{interval}})")
+alertcondition(isConsolidating and not isConsolidating[1], title = "Entering Consolidation", message = "{{ticker}} entering consolidation ({{interval}})")
+
+// ============================== INFO TABLE ==============================
+var table infoTable = table.new(tablePosition, 2, 7, bgcolor = tblBgColor, border_width = 1)
+
+if barstate.islast
+    statusTxt = isConsolidating ? "CONSOLIDATING" : (dir != 0 ? "BREAKING OUT" : "TRENDING")
+    statusCol = isConsolidating ? colConsolidating : (dir != 0 ? colBreakingOut : colTrending)
+    table.cell(infoTable, 0, 0, "Status", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 0, statusTxt, text_color = statusCol)
+    table.cell(infoTable, 0, 1, "Mode", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 1, useAdaptive ? "Adaptive" : "Fixed %", text_color = colMode)
+    table.cell(infoTable, 0, 2, "Range %", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 2, na(rangePercent) ? "n/a" : str.tostring(rangePercent, "#.##") + "%", text_color = colRange)
+    table.cell(infoTable, 0, 3, "Threshold", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 3, na(effectiveThreshold) ? "n/a" : str.tostring(effectiveThreshold, "#.##") + "%", text_color = colThreshold)
+    table.cell(infoTable, 0, 4, "Resistance", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 4, na(rangeHigh) ? "n/a" : str.tostring(rangeHigh, format.mintick), text_color = colResistance)
+    table.cell(infoTable, 0, 5, "Support", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 5, na(rangeLow) ? "n/a" : str.tostring(rangeLow, format.mintick), text_color = colSupport)
+    table.cell(infoTable, 0, 6, "Confirm", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 6, str.tostring(confirmCnt) + " / " + str.tostring(breakoutConfirmation), text_color = colConfirm)
