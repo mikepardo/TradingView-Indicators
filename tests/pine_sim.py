@@ -352,13 +352,15 @@ def simulate_v6(bars, lookback=20, confirm_bars=2, mode="adaptive",
         coil_age = (coil_age + 1) if is_cons and was_consolidating else (1 if is_cons else 0)
         if not is_cons and was_consolidating:
             ended_coil_age = coil_age_prev
-            coil_end = i
+            coil_end = i - 1          # the LAST consolidating bar
         coil_age_prev = coil_age
 
         # expand-only coil-extent levels (frozen once the coil ends)
         if is_cons and not was_consolidating:
             coil_high, coil_low = range_high, range_low
             coil_end = None
+            # fresh coil supersedes any confirmation still in progress
+            dir_, confirm_cnt, broken_level = 0, 0, math.nan
         elif is_cons:
             coil_high = max(coil_high, range_high)
             coil_low = min(coil_low, range_low)
