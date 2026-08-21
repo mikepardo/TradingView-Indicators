@@ -1,0 +1,814 @@
+//@version=6
+// =============================================================================
+// Consolidation & Breakout Detector v7
+//
+// Finds coils (tight ranges), flags close-confirmed breakouts, and manages the
+// trade around each one: entry/stop/T1/T2 plan, retest entries, failed-break
+// and stop exits, and frozen S/R zones that flip roles when broken.
+//
+// The "ℹ️ About This Script" group below renders as read-only dropdowns at the
+// top of the indicator's settings panel — hover each ⓘ icon for the full text.
+// (TradingView's chart-legend "About this script" menu item is populated from
+// the publication description when the script is published, not from code —
+// paste the same text there when publishing.)
+// =============================================================================
+indicator("Consolidation & Breakout Detector v7", overlay = true, max_boxes_count = 250, max_lines_count = 300, max_labels_count = 250)
+
+// ============================== ABOUT THIS SCRIPT ==============================
+// Informational fields. Their values are unused — each one's detail lives in its
+// tooltip (hover the ⓘ icon next to it in the settings panel). display.none
+// keeps these strings out of the chart status line.
+aboutOverview   = input.string("Coil detection + breakout entries, retests & exits", "📖  Overview", options = ["Coil detection + breakout entries, retests & exits"], group = "ℹ️ About This Script", display = display.none, tooltip = "CONSOLIDATION & BREAKOUT DETECTOR v7\n\nFinds periods where price coils into a tight range, flags confirmed breakouts, and now manages the full trade around each breakout:\n• a TRADE PLAN with exact entry, stop and two measured-move targets drawn on the chart\n• a RETEST entry signal when price pulls back to the broken level and holds (a far more precise entry than chasing)\n• FAILED-BREAKOUT and STOP exit warnings\n• S/R zones that FREEZE at the broken level (v5 zones kept sliding), extend until broken, show touch-count strength, and flip roles when broken.\n\nTwo detection engines: ADAPTIVE (auto-scales to any symbol/timeframe) and FIXED-percent.")
+aboutHowItWorks = input.string("Frozen zones · close-confirmed breaks · plans", "⚙️  How It Works", options = ["Frozen zones · close-confirmed breaks · plans"], group = "ℹ️ About This Script", display = display.none, tooltip = "DETECTION\n• The high-to-low range is measured over the Lookback window, evaluated on the PRIOR bar so a breakout candle can't distort the very level it is breaking.\n• Adaptive mode: the range is 'tight' when below Compression Factor × its own typical range (median or SMA baseline).\n• Fixed mode: the range is 'tight' when below a set % of price.\n\nBREAKOUT\n• A raw break = a close beyond the range edge (after the coil has lasted at least Min Coil Bars).\n• The zone is FROZEN at that moment — breakout bars can no longer inflate it.\n• The break must hold for N total closes beyond the level (Confirmation Closes, break bar included) before the signal fires. Optional ATR buffer / volume filters.\n• One signal per consolidation; re-arms when a fresh coil forms.\n\nTRADE PLAN (on signal)\n• Entry = the broken level. Stop = zone midpoint, opposite edge, or ATR-based. T1/T2 = measured moves (multiples of zone height).\n• RETEST: price pulling back to within the Retest Band of the level and closing back in the breakout direction fires a precision entry.\n• EXITS: close back inside the zone = FAIL warning; close through the stop = STOP; targets print T1/T2 (both can tag on the same bar).")
+aboutReading    = input.string("Zones freeze & flip · ▲▼ BREAK · RETEST · FAIL", "👁️  Reading The Chart", options = ["Zones freeze & flip · ▲▼ BREAK · RETEST · FAIL"], group = "ℹ️ About This Script", display = display.none, tooltip = "ON THE CHART\n• Yellow background = coiling now. Orange tint = a break is being confirmed.\n• Dashed-border box = zone still forming (edges can still move). Solid-border box = FROZEN zone; its edges no longer move. 'R×n S×m' on the box = how many bars touched resistance/support (strength).\n• Shaded strips inside the zone edges = the actual S/R BANDS (zones, not lines).\n• Thick horizontal line after a breakout = the broken level extended forward (broken resistance acts as new support and vice versa). It grays out if price reclaims it.\n• ▲/▼ BREAK = confirmed breakout, with a label showing Entry / Stop / T1 / T2.\n• ▲/▼ RETEST = price returned to the broken level and held — the precision entry.\n• Orange ✕ FAIL = breakout failing (closed back inside the zone). Red ✕ STOP = stop level closed through. T1/T2 diamonds = targets tagged.")
+aboutSettings   = input.string("Mode · confirmation · plan · retest · zones", "🎚️  Settings Guide", options = ["Mode · confirmation · plan · retest · zones"], group = "ℹ️ About This Script", display = display.none, tooltip = "KEY CONTROLS\n• Detection Mode — Adaptive (recommended) or Fixed %.\n• Compression Factor — lower = stricter squeeze (adaptive only).\n• Min Coil Bars — how long a coil must last before its break can signal; raises signal quality in chop.\n• Breakout Level Basis — Wicks (conservative) or Closes (wick-immune, earlier entries).\n• Confirmation Closes — more = fewer, later, higher-quality signals.\n• ATR Length — the ATR that drives the breakout buffer, touch/retest bands and ATR-mode stops.\n• Stop-Loss Placement — Zone midpoint (tight, default), Opposite zone edge (classic), or ATR multiple.\n• Targets — measured moves in zone heights (T1 1.0×, T2 2.0× by default; keep T2 ≥ T1).\n• Retest Band — how close the pullback must come to the broken level to count as a retest.\n\nNO ZONES SHOWING?\nCompare Range % vs Threshold in the table. In Fixed mode, raise the threshold. In Adaptive mode, raise the Compression Factor.")
+aboutNotes      = input.string("Confirms on close · needs warm-up · not advice", "⚠️  Notes & Limitations", options = ["Confirms on close · needs warm-up · not advice"], group = "ℹ️ About This Script", display = display.none, tooltip = "NOTES & LIMITATIONS\n• All signals confirm on bar CLOSE. The current unclosed bar can still change; confirmed history does NOT repaint. Frozen zones, flip lines and trade-plan levels never move after creation.\n• Adaptive mode needs warm-up history (Lookback + Baseline bars) before it begins flagging.\n• A prior spike high stays in the lookback window and can become the resistance the next breakout must clear — the touch counts on the zone help judge how meaningful the edge is.\n• No indicator is perfect — expect some false breakouts in choppy markets. Min Coil Bars, confirmation closes and the filters reduce but do not eliminate them.\n• Educational tool only — not financial advice.")
+
+// ============================== DETECTION INPUTS ==============================
+detectionMode = input.string("Adaptive (volatility-relative)", "Detection Mode", options = ["Adaptive (volatility-relative)", "Fixed (% of price)"], group = "Detection", tooltip = "Adaptive = current range vs its own typical range, so it auto-scales across instruments and timeframes. Fixed = an absolute % of price (the original behavior).")
+lookbackPeriod = input.int(20, "Consolidation Lookback Period", minval = 5, maxval = 100, group = "Detection", tooltip = "Window used to measure the high-to-low range.")
+breakoutConfirmation = input.int(2, "Confirmation Closes", minval = 1, maxval = 5, group = "Detection", tooltip = "Total closes beyond the broken level required before the signal fires, INCLUDING the break bar itself. 2 = break close + 1 more holding close.")
+minCoilBars = input.int(3, "Min Coil Bars Before Breakout", minval = 1, maxval = 20, group = "Detection", tooltip = "The consolidation must have lasted at least this many bars before a break of it can signal. Screens out 1-2 bar accidental squeezes in choppy tape.")
+graceBars = input.int(5, "Breakout Grace Bars After Coil", minval = 0, maxval = 20, group = "Detection", tooltip = "A break of the frozen zone boundary can still signal for this many bars after the squeeze itself has ended. Rescues slow, structurally valid breakouts that v5 missed entirely (the range expands before the close clears the boundary). 0 = breaks must occur while still consolidating.")
+levelBasis = input.string("Wicks (conservative)", "Breakout Level Basis", options = ["Wicks (conservative)", "Closes (aggressive)"], group = "Detection", tooltip = "Wicks = zone edges at the extreme highs/lows (classic; note a single spike wick can set the level). Closes = edges at the extreme candle bodies, immune to one-off wicks — earlier entries, at the cost of occasionally fighting a wick that was real. The zone box always outlines the full wick range and the shaded bands show the wick-to-body area either way.")
+
+// -- Adaptive-mode controls --
+compressionFactor = input.float(0.6, "Compression Factor (adaptive)", minval = 0.1, maxval = 1.0, step = 0.05, group = "Adaptive Mode", tooltip = "ADAPTIVE MODE ONLY. The current range must be <= this fraction of its typical range to count as consolidation. Lower = stricter (a tighter squeeze is required). 0.6 = 'range is at most 60% of normal'.")
+volBaselineLength = input.int(100, "Volatility Baseline Length (adaptive)", minval = 20, maxval = 500, group = "Adaptive Mode", tooltip = "ADAPTIVE MODE ONLY. How many bars define 'normal' range. Longer = a smoother, slower-moving baseline.")
+baselineMethod = input.string("Median (robust)", "Baseline Smoothing (adaptive)", options = ["Median (robust)", "SMA (original)"], group = "Adaptive Mode", tooltip = "How the 'normal' range is computed. Median ignores one-off volatility spikes that would otherwise loosen the squeeze test for many bars afterwards; SMA is the original v5 behavior.")
+
+// -- Fixed-mode control --
+consolidationThreshold = input.float(5.0, "Consolidation Threshold % (fixed)", minval = 0.5, maxval = 20, step = 0.5, group = "Fixed Mode", tooltip = "FIXED MODE ONLY. Range counts as consolidation when it is <= this % of price.")
+
+// -- Optional breakout-quality filters --
+atrLength     = input.int(14, "ATR Length", minval = 1, maxval = 200, group = "Filters", tooltip = "ATR period used everywhere the script measures distance: the breakout buffer, touch/break bands, the retest band and ATR-mode stops.")
+atrBufferMult = input.float(0.0, "Breakout Buffer (ATR multiple)", minval = 0.0, maxval = 3.0, step = 0.1, group = "Filters", tooltip = "Require the close to clear the level by this many ATRs. Higher = fewer, cleaner signals. 0 = off.")
+useVolFilter  = input.bool(false, "Require Above-Average Volume On Breakout", group = "Filters")
+volMaLength   = input.int(20, "Volume MA Length", minval = 1, group = "Filters")
+
+// -- Trade plan --
+showTradePlan = input.bool(true, "Draw Trade Plan (entry / stop / targets)", group = "Trade Plan")
+stopModeInput = input.string("Zone midpoint", "Stop-Loss Placement", options = ["Zone midpoint", "Opposite zone edge", "ATR multiple"], group = "Trade Plan", tooltip = "Zone midpoint = tight stop halfway into the zone (default). Opposite zone edge = classic full-zone stop. ATR multiple = stop placed this many ATRs beyond the entry level.")
+stopAtrMult   = input.float(1.5, "Stop ATR Multiple (ATR mode)", minval = 0.1, maxval = 10.0, step = 0.1, group = "Trade Plan")
+target1Mult   = input.float(1.0, "Target 1 (× zone height)", minval = 0.25, maxval = 10.0, step = 0.25, group = "Trade Plan", tooltip = "Measured-move target: the zone height projected from the broken level.")
+target2Mult   = input.float(2.0, "Target 2 (× zone height)", minval = 0.5, maxval = 20.0, step = 0.25, group = "Trade Plan", tooltip = "Keep this >= Target 1 — T2 only pays out after T1 has been tagged.")
+keepOldPlans  = input.bool(false, "Keep Past Trade-Plan Lines", group = "Trade Plan", tooltip = "Off = only the current plan's stop/target lines stay on the chart; each new signal clears the previous plan's lines. Signal labels remain up to the chart's label limit (~250; the oldest are dropped silently beyond that).")
+
+// -- Retest & exits --
+enableRetest  = input.bool(true, "Retest Entry Signal", group = "Retest & Exits", tooltip = "After a confirmed breakout, fires when price pulls back to within the Retest Band of the broken level and closes back in the breakout direction. Entries at the retest fill far closer to the level than chasing the confirmation close.")
+retestBandAtr = input.float(0.5, "Retest Band (ATR multiple)", minval = 0.1, maxval = 2.0, step = 0.05, group = "Retest & Exits", tooltip = "How close the pullback must come to the broken level (in ATRs) to count as a retest.")
+retestWindow  = input.int(20, "Retest Window (bars)", minval = 1, maxval = 100, group = "Retest & Exits", tooltip = "Retest entries are only valid within this many bars of the breakout signal.")
+enableFailExit = input.bool(true, "Failed-Breakout Exit Warning", group = "Retest & Exits", tooltip = "Warns the moment a close falls back through the broken level — the breakout premise is dead, usually long before the stop is hit.")
+
+// -- Zones --
+showConsolidationBox = input.bool(true, "Show Consolidation Zones", group = "Zones")
+maxZonesKept  = input.int(8, "Max Zones Kept On Chart", minval = 1, maxval = 20, group = "Zones", tooltip = "Oldest zones (and their broken-level lines) are removed beyond this count.")
+showZoneBands = input.bool(true, "Shade S/R Edge Bands", group = "Zones", tooltip = "Shades the actual support/resistance BANDS along the zone edges — S/R is an area, not a line.")
+touchBandAtr  = input.float(0.25, "Touch / Break Band (ATR multiple)", minval = 0.05, maxval = 1.0, step = 0.05, group = "Zones", tooltip = "Band width used both to count edge touches (zone strength) and to decide when an old zone is decisively broken.")
+extendZones   = input.bool(true, "Extend Unbroken Zones Right", group = "Zones", tooltip = "Zones that ended without a breakout keep extending right until price decisively closes beyond an edge — they stay live S/R.")
+
+// -- Display --
+boxColor           = input.color(color.new(color.blue, 85), "Consolidation Zone Fill", group = "Display")
+resBandColor       = input.color(color.new(color.red, 82), "Resistance Band Fill", group = "Display")
+supBandColor       = input.color(color.new(color.green, 82), "Support Band Fill", group = "Display")
+tablePositionInput = input.string("Top Right", "Info Table Position", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = "Display")
+
+// -- Table colors (each value cell is individually configurable) --
+tblBgColor       = input.color(color.new(color.black, 80), "Table Background", group = "Table Colors")
+tblLabelColor    = input.color(color.white,  "Label Text (left column)", group = "Table Colors")
+colConsolidating = input.color(color.yellow, "Value: Status = Consolidating", group = "Table Colors")
+colBreakingOut   = input.color(color.orange, "Value: Status = Breaking Out", group = "Table Colors")
+colTrending      = input.color(color.lime,   "Value: Status = Trending", group = "Table Colors")
+colTrendUp       = input.color(color.green,  "Value: Status = Long in Play (trend up)", group = "Table Colors")
+colTrendDown     = input.color(color.red,    "Value: Status = Short in Play (trend down)", group = "Table Colors")
+colMode          = input.color(color.aqua,   "Value: Mode", group = "Table Colors")
+colRange         = input.color(color.white,  "Value: Range %", group = "Table Colors")
+colThreshold     = input.color(color.gray,   "Value: Threshold", group = "Table Colors")
+colResistance    = input.color(color.red,    "Value: Resistance", group = "Table Colors")
+colSupport       = input.color(color.green,  "Value: Support", group = "Table Colors")
+colConfirm       = input.color(color.white,  "Value: Confirm", group = "Table Colors")
+colPlan          = input.color(color.aqua,   "Value: Trade Plan rows", group = "Table Colors")
+
+// ============================== TABLE POSITION HELPER ==============================
+tablePosition = switch tablePositionInput
+    "Top Left"      => position.top_left
+    "Top Center"    => position.top_center
+    "Top Right"     => position.top_right
+    "Middle Left"   => position.middle_left
+    "Middle Center" => position.middle_center
+    "Middle Right"  => position.middle_right
+    "Bottom Left"   => position.bottom_left
+    "Bottom Center" => position.bottom_center
+    "Bottom Right"  => position.bottom_right
+    => position.top_right
+
+// ============================== RANGE (PRIOR-BAR WINDOW) ==============================
+// Measure the range over the window ENDING AT THE PRIOR BAR ([1]) so the current
+// (potential breakout) bar cannot contaminate the level it is breaking.
+max_bars_back(high, 500)
+max_bars_back(low, 500)
+
+hhRaw = ta.highest(high, lookbackPeriod)
+llRaw = ta.lowest(low,  lookbackPeriod)
+rangeHigh = hhRaw[1]
+rangeLow  = llRaw[1]
+
+// body (close/open) extremes over the same prior-bar window — the optional
+// wick-immune level basis, and the inner edge of the S/R bands
+bodyHiRaw = ta.highest(math.max(open, close), lookbackPeriod)
+bodyLoRaw = ta.lowest(math.min(open, close),  lookbackPeriod)
+bodyHigh  = bodyHiRaw[1]
+bodyLow   = bodyLoRaw[1]
+useCloseBasis = levelBasis == "Closes (aggressive)"
+
+avgPrice     = (rangeHigh + rangeLow) / 2
+rangePercent = not na(avgPrice) and avgPrice != 0 ? (rangeHigh - rangeLow) / avgPrice * 100 : na
+
+// ============================== CONSOLIDATION TEST (MODE-DEPENDENT) ==============================
+useAdaptive = detectionMode == "Adaptive (volatility-relative)"
+baselineSma = ta.sma(rangePercent, volBaselineLength)
+baselineMed = ta.percentile_nearest_rank(rangePercent, volBaselineLength, 50)
+baselineRange = baselineMethod == "Median (robust)" ? baselineMed : baselineSma
+rawThreshold  = useAdaptive ? baselineRange * compressionFactor : consolidationThreshold
+
+// Anti-droop lock: the adaptive baseline includes the coil's own tight
+// readings, so the threshold would otherwise chase the range downward and
+// flicker a long coil off/on mid-formation (re-arming duplicate signals).
+// Once a coil starts, it is judged against the threshold LOCKED at its onset.
+var float lockedThreshold = na
+var bool  inCoil = false
+effectiveThreshold = inCoil and not na(lockedThreshold) ? lockedThreshold : rawThreshold
+isConsolidating = not na(rangePercent) and not na(effectiveThreshold) and rangePercent <= effectiveThreshold
+if isConsolidating and not inCoil
+    lockedThreshold := rawThreshold
+if not isConsolidating
+    lockedThreshold := na
+inCoil := isConsolidating
+// (v6 bools are never na: the [1] reference is simply false on the first bar)
+newConsolidation = isConsolidating and not isConsolidating[1]
+
+// Age of the current coil, in bars (0 when not consolidating).
+var int coilAge = 0
+coilAge := isConsolidating ? (newConsolidation ? 1 : coilAge + 1) : 0
+
+// Final age of the coil that most recently ended (the zone may only be
+// finalized several bars later, after a failed confirmation attempt).
+var int endedCoilAge = 0
+if not isConsolidating and isConsolidating[1]
+    endedCoilAge := coilAge[1]
+
+// ============================== BREAKOUT FILTERS (OPTIONAL) ==============================
+atrVal = ta.atr(atrLength)
+buffer = atrBufferMult * atrVal
+volMa  = ta.sma(volume, volMaLength)
+// If the symbol supplies no volume data, the filter passes instead of silently
+// suppressing every signal forever.
+volOk  = not useVolFilter or na(volume) or (not na(volMa) and volume > volMa)
+touchBand = touchBandAtr * atrVal
+
+// ============================== CONFIRMATION STATE MACHINE ==============================
+// dir: 0 = idle, 1 = tracking an up-break, -1 = tracking a down-break.
+// armed: only allow a new signal once a FRESH consolidation has formed.
+// coilHigh/coilLow: EXPAND-ONLY boundaries of the current coil. Unlike the raw
+// rolling window (whose extremes age out and decay while a long coil forms),
+// these can only widen, so the breakout level is the structural boundary the
+// user actually sees on the chart — never a decayed artifact of window aging.
+// pend*: the zone FROZEN at the raw-break bar, so breakout bars can't inflate it.
+var int   dir         = 0
+var int   confirmCnt  = 0
+var float brokenLevel = na
+var bool  armed       = false
+var float coilHigh    = na   // wick extremes (zone outline)
+var float coilLow     = na
+var float coilBodyHigh = na  // body extremes (band inner edge / optional level basis)
+var float coilBodyLow  = na
+var int   coilStartBar = na
+var int   coilEndBar   = na
+var float pendHigh    = na   // frozen wick edges
+var float pendLow     = na
+var float pendBodyHigh = na  // frozen body edges
+var float pendBodyLow  = na
+var float pendTopLvl  = na   // frozen TRADED levels (basis-dependent)
+var float pendBotLvl  = na
+var int   pendStart   = na
+var int   pendBreakBar = na
+var int   pendTopTouches = 0
+var int   pendBotTouches = 0
+
+// Set when a confirmation attempt dies this bar (+1 = up-track failed,
+// -1 = down-track failed): gates same-direction re-entry and prints a marker.
+int confirmFailDir = 0
+
+// All state mutations are gated on barstate.isconfirmed so the realtime bar
+// behaves exactly like history: signals, alerts and drawings only ever appear
+// on a CLOSED bar — no intrabar flicker, no premature alerts.
+// ============================== ZONE / PLAN STORAGE ==============================
+var box  formingBox    = na
+var bool formingActive = false
+var int  formingCoilStart = na  // which coil the preview box belongs to
+
+// Frozen zones. zStates: 0 = unresolved (still live S/R), 1 = broken up, 2 = broken down.
+// zTexts keeps each zone's base "R×n S×m" text: Pine has no box.get_text, so
+// outcome stamps are rebuilt from here instead of appended blindly.
+var array<box>    zBoxes    = array.new<box>()
+var array<box>    zTopBands = array.new<box>()
+var array<box>    zBotBands = array.new<box>()
+var array<float>  zTops     = array.new<float>()
+var array<float>  zBots     = array.new<float>()
+var array<int>    zStates   = array.new<int>()
+var array<string> zTexts    = array.new<string>()
+
+// Broken-level "flip" lines (broken resistance = new support, and vice versa).
+var array<line> fLines = array.new<line>()
+
+// Current trade plan (stop/target tracking).
+var int    planDir   = 0
+var float  planEntry = na
+var float  planStop  = na
+var float  planT1    = na
+var float  planT2    = na
+var int    planBar   = na
+var bool   planT1Hit = false
+var string planStatus = "—"
+var line   planStopLine = na
+var line   planT1Line   = na
+var line   planT2Line   = na
+var label  planStopLbl  = na
+var label  planT1Lbl    = na
+var label  planT2Lbl    = na
+var box    curZoneBox   = na
+
+// Current flip-level tracking (retest entries + failed-break warning).
+// Deliberately independent of the plan: a retest can fire even after T2 tags.
+var int   flipDir    = 0
+var float flipLevel  = na
+var int   flipBar    = na
+var bool  retestDone = false
+var line  flipLine   = na
+
+f_pushZone(box _zone, box _tb, box _bb, float _top, float _bot, int _st, string _txt) =>
+    array.push(zBoxes, _zone)
+    array.push(zTopBands, _tb)
+    array.push(zBotBands, _bb)
+    array.push(zTops, _top)
+    array.push(zBots, _bot)
+    array.push(zStates, _st)
+    array.push(zTexts, _txt)
+    if array.size(zBoxes) > maxZonesKept
+        box.delete(array.shift(zBoxes))
+        box.delete(array.shift(zTopBands))
+        box.delete(array.shift(zBotBands))
+        array.shift(zTops)
+        array.shift(zBots)
+        array.shift(zStates)
+        array.shift(zTexts)
+if barstate.isconfirmed
+    if newConsolidation
+        // A preview left un-finalized by the previous coil (it ended while a
+        // break of it was still confirming) is frozen into a zone NOW, from
+        // that coil's still-unreset boundaries — otherwise a qualified coil
+        // would silently leave no S/R zone at all.
+        if formingActive
+            if endedCoilAge >= minCoilBars and not na(coilEndBar)
+                box.set_top(formingBox, coilHigh)
+                box.set_bottom(formingBox, coilLow)
+                box.set_right(formingBox, coilEndBar)
+                box.set_border_color(formingBox, color.new(color.gray, 20))
+                box.set_border_style(formingBox, line.style_solid)
+                int tt = 0
+                int bt = 0
+                int startOff = bar_index - coilEndBar
+                int endOff   = math.min(bar_index - box.get_left(formingBox), 400)
+                if startOff <= endOff
+                    for i = startOff to endOff
+                        if high[i] >= coilHigh - touchBand
+                            tt += 1
+                        if low[i] <= coilLow + touchBand
+                            bt += 1
+                string zTxt = "R×" + str.tostring(tt) + "  S×" + str.tostring(bt)
+                box.set_text(formingBox, zTxt)
+                box.set_text_size(formingBox, size.tiny)
+                box.set_text_color(formingBox, color.new(color.white, 25))
+                box.set_text_halign(formingBox, text.align_left)
+                box.set_text_valign(formingBox, text.align_top)
+                box tb = showZoneBands ? box.new(box.get_left(formingBox), coilHigh, coilEndBar, math.max(math.min(coilBodyHigh, coilHigh - touchBand), coilLow), border_color = na, bgcolor = resBandColor) : na
+                box bb = showZoneBands ? box.new(box.get_left(formingBox), math.min(math.max(coilBodyLow, coilLow + touchBand), coilHigh), coilEndBar, coilLow, border_color = na, bgcolor = supBandColor) : na
+                f_pushZone(formingBox, tb, bb, coilHigh, coilLow, 0, zTxt)
+            else
+                box.delete(formingBox)
+            formingBox := na
+            formingActive := false
+
+        armed := true
+        coilHigh := rangeHigh
+        coilLow  := rangeLow
+        coilBodyHigh := bodyHigh
+        coilBodyLow  := bodyLow
+        coilStartBar := bar_index
+        coilEndBar := na
+        // a fresh coil supersedes any confirmation still in progress from a
+        // dead coil — its stale levels must not fire against the new structure
+        dir := 0
+        confirmCnt := 0
+        brokenLevel := na
+    else if isConsolidating
+        coilHigh := math.max(coilHigh, rangeHigh)
+        coilLow  := math.min(coilLow, rangeLow)
+        coilBodyHigh := math.max(coilBodyHigh, bodyHigh)
+        coilBodyLow  := math.min(coilBodyLow, bodyLow)
+    if not isConsolidating and isConsolidating[1]
+        coilEndBar := bar_index - 1  // the LAST consolidating bar
+
+    // the levels breaks are actually tested against (basis-dependent)
+    float coilTopLvl = useCloseBasis ? coilBodyHigh : coilHigh
+    float coilBotLvl = useCloseBasis ? coilBodyLow  : coilLow
+
+    // A break of the frozen boundary may signal while the coil lives OR within
+    // the grace window just after it ends (slow structural breakouts).
+    bool inBreakWindow = isConsolidating or (not na(coilEndBar) and bar_index - coilEndBar <= graceBars)
+    bool coilAgeOk     = isConsolidating ? coilAge >= minCoilBars : endedCoilAge >= minCoilBars
+    bool rawBreakUp    = inBreakWindow and coilAgeOk and not na(coilTopLvl) and close > coilTopLvl + buffer and volOk
+    bool rawBreakDown  = inBreakWindow and coilAgeOk and not na(coilBotLvl) and close < coilBotLvl - buffer and volOk
+
+    // ---- hold / reset of an in-progress break. Confirmation closes are held
+    // to the SAME buffered standard as the initial break; a close between the
+    // level and level+buffer stalls the count, a close back through the level
+    // resets it.
+    if dir == 1
+        if close > brokenLevel + buffer
+            confirmCnt += 1
+        else if close <= brokenLevel
+            confirmFailDir := 1
+            dir := 0
+            confirmCnt := 0
+            brokenLevel := na
+    else if dir == -1
+        if close < brokenLevel - buffer
+            confirmCnt += 1
+        else if close >= brokenLevel
+            confirmFailDir := -1
+            dir := 0
+            confirmCnt := 0
+            brokenLevel := na
+
+    // ---- new break entry. Runs on the same bar as a reset so a fakeout that
+    // reverses straight through the other side is captured without losing a
+    // bar — but never re-enters the SAME direction that just failed.
+    if dir == 0
+        if armed and rawBreakUp and confirmFailDir != 1
+            dir           := 1
+            brokenLevel   := coilTopLvl
+            confirmCnt    := 1
+            pendHigh      := coilHigh
+            pendLow       := coilLow
+            pendBodyHigh  := coilBodyHigh
+            pendBodyLow   := coilBodyLow
+            pendTopLvl    := coilTopLvl
+            pendBotLvl    := coilBotLvl
+            pendStart     := math.max(0, coilStartBar - lookbackPeriod)
+            pendBreakBar  := bar_index
+            int tt = 0
+            int bt = 0
+            int span = math.min(bar_index - pendStart, 400)
+            for i = 1 to span
+                if high[i] >= pendHigh - touchBand
+                    tt += 1
+                if low[i] <= pendLow + touchBand
+                    bt += 1
+            pendTopTouches := tt
+            pendBotTouches := bt
+        else if armed and rawBreakDown and confirmFailDir != -1
+            dir           := -1
+            brokenLevel   := coilBotLvl
+            confirmCnt    := 1
+            pendHigh      := coilHigh
+            pendLow       := coilLow
+            pendBodyHigh  := coilBodyHigh
+            pendBodyLow   := coilBodyLow
+            pendTopLvl    := coilTopLvl
+            pendBotLvl    := coilBotLvl
+            pendStart     := math.max(0, coilStartBar - lookbackPeriod)
+            pendBreakBar  := bar_index
+            int tt = 0
+            int bt = 0
+            int span = math.min(bar_index - pendStart, 400)
+            for i = 1 to span
+                if high[i] >= pendHigh - touchBand
+                    tt += 1
+                if low[i] <= pendLow + touchBand
+                    bt += 1
+            pendTopTouches := tt
+            pendBotTouches := bt
+
+confirmedBreakoutUp   = dir == 1  and confirmCnt == breakoutConfirmation and barstate.isconfirmed
+confirmedBreakoutDown = dir == -1 and confirmCnt == breakoutConfirmation and barstate.isconfirmed
+
+// pre-signal process markers: the raw break the moment it happens, and a
+// confirmation attempt that died — so the chart shows the full story
+sigFirstBreakUp   = barstate.isconfirmed and dir == 1  and pendBreakBar == bar_index and not confirmedBreakoutUp
+sigFirstBreakDown = barstate.isconfirmed and dir == -1 and pendBreakBar == bar_index and not confirmedBreakoutDown
+sigConfirmFailed  = confirmFailDir != 0
+
+
+f_pushFlipLine(line _ln) =>
+    array.push(fLines, _ln)
+    if array.size(fLines) > maxZonesKept
+        line.delete(array.shift(fLines))
+
+// ============================== PER-BAR SIGNAL FLAGS ==============================
+bool sigBreakUp    = false
+bool sigBreakDown  = false
+bool sigRetestUp   = false
+bool sigRetestDown = false
+bool sigFailLong   = false
+bool sigFailShort  = false
+bool sigStopLong   = false
+bool sigStopShort  = false
+bool sigT1Long     = false
+bool sigT1Short    = false
+bool sigT2Long     = false
+bool sigT2Short    = false
+
+// ============================== BREAKOUT: ZONE FREEZE + TRADE PLAN ==============================
+if confirmedBreakoutUp or confirmedBreakoutDown
+    bool up = confirmedBreakoutUp
+    sigBreakUp   := up
+    sigBreakDown := not up
+
+    // ---- freeze the zone at the values captured on the raw-break bar
+    if not na(formingBox)
+        box.delete(formingBox)
+        formingBox := na
+    formingActive := false
+
+    if showConsolidationBox
+        color zoneBorder = up ? color.new(color.green, 0) : color.new(color.red, 0)
+        // If the coil already finalized into a neutral zone (grace-window
+        // breakout), mark THAT zone as broken instead of drawing a duplicate.
+        bool reusedZone = false
+        if array.size(zBoxes) > 0
+            int lastIdx = array.size(zBoxes) - 1
+            if array.get(zTops, lastIdx) == pendHigh and array.get(zBots, lastIdx) == pendLow
+                reusedZone := true
+                array.set(zStates, lastIdx, up ? 1 : 2)
+                box lastBox = array.get(zBoxes, lastIdx)
+                box lastTb  = array.get(zTopBands, lastIdx)
+                box lastBb  = array.get(zBotBands, lastIdx)
+                if not na(lastBox)
+                    box.set_border_color(lastBox, zoneBorder)
+                    box.set_right(lastBox, pendBreakBar)
+                    // rebuild from the stored base text so any earlier stamp
+                    // from the maintenance loop is replaced, not appended to
+                    box.set_text(lastBox, array.get(zTexts, lastIdx) + (up ? "  ▲ broke up" : "  ▼ broke down"))
+                    curZoneBox := lastBox
+                if not na(lastTb)
+                    box.set_right(lastTb, pendBreakBar)
+                if not na(lastBb)
+                    box.set_right(lastBb, pendBreakBar)
+        if not reusedZone
+            string zoneTxt = "R×" + str.tostring(pendTopTouches) + "  S×" + str.tostring(pendBotTouches)
+            box zb = box.new(pendStart, pendHigh, pendBreakBar, pendLow, border_color = zoneBorder, border_width = 1, bgcolor = boxColor, text = zoneTxt, text_size = size.tiny, text_color = color.new(color.white, 25), text_halign = text.align_left, text_valign = up ? text.align_bottom : text.align_top)
+            // bands span the wick-to-body area (at least touchBand thick,
+            // never spilling past the opposite zone edge on ultra-tight coils)
+            box tb = showZoneBands ? box.new(pendStart, pendHigh, pendBreakBar, math.max(math.min(pendBodyHigh, pendHigh - touchBand), pendLow), border_color = na, bgcolor = resBandColor) : na
+            box bb = showZoneBands ? box.new(pendStart, math.min(math.max(pendBodyLow, pendLow + touchBand), pendHigh), pendBreakBar, pendLow, border_color = na, bgcolor = supBandColor) : na
+            f_pushZone(zb, tb, bb, pendHigh, pendLow, up ? 1 : 2, zoneTxt)
+            curZoneBox := zb
+
+    // ---- broken level extended forward: resistance flips to support (and vice versa)
+    float level = up ? pendTopLvl : pendBotLvl
+    flipLine := line.new(pendBreakBar, level, bar_index, level, color = up ? color.new(color.green, 0) : color.new(color.red, 0), width = 2)
+    f_pushFlipLine(flipLine)
+    flipDir    := up ? 1 : -1
+    flipLevel  := level
+    flipBar    := bar_index
+    retestDone := false
+
+    // ---- trade plan (all levels from the frozen TRADED basis)
+    float zoneH = pendTopLvl - pendBotLvl
+    int   d     = up ? 1 : -1
+    planDir   := d
+    planEntry := level
+    planStop  := stopModeInput == "Zone midpoint" ? (pendTopLvl + pendBotLvl) / 2 : stopModeInput == "Opposite zone edge" ? (up ? pendBotLvl : pendTopLvl) : level - d * stopAtrMult * atrVal
+    planT1    := level + d * target1Mult * zoneH
+    planT2    := level + d * target2Mult * zoneH
+    planBar   := bar_index
+    planT1Hit := false
+    planStatus := up ? "LONG active" : "SHORT active"
+
+    if showTradePlan
+        if not keepOldPlans
+            line.delete(planStopLine)
+            line.delete(planT1Line)
+            line.delete(planT2Line)
+            label.delete(planStopLbl)
+            label.delete(planT1Lbl)
+            label.delete(planT2Lbl)
+        planStopLine := line.new(bar_index, planStop, bar_index + 1, planStop, color = color.new(color.red, 0), style = line.style_dashed, width = 1)
+        planT1Line   := line.new(bar_index, planT1, bar_index + 1, planT1, color = color.new(color.teal, 0), style = line.style_dotted, width = 1)
+        planT2Line   := line.new(bar_index, planT2, bar_index + 1, planT2, color = color.new(color.teal, 0), style = line.style_dotted, width = 1)
+        planStopLbl  := label.new(bar_index + 1, planStop, "STOP " + str.tostring(planStop, format.mintick), style = label.style_none, textcolor = color.new(color.red, 0), size = size.small)
+        planT1Lbl    := label.new(bar_index + 1, planT1, "T1 " + str.tostring(planT1, format.mintick), style = label.style_none, textcolor = color.new(color.teal, 0), size = size.small)
+        planT2Lbl    := label.new(bar_index + 1, planT2, "T2 " + str.tostring(planT2, format.mintick), style = label.style_none, textcolor = color.new(color.teal, 0), size = size.small)
+        label.new(bar_index, close, (up ? "BREAK ▲" : "BREAK ▼") + "\nE  " + str.tostring(planEntry, format.mintick) + "\nS  " + str.tostring(planStop, format.mintick) + "\nT1 " + str.tostring(planT1, format.mintick) + "\nT2 " + str.tostring(planT2, format.mintick), yloc = up ? yloc.belowbar : yloc.abovebar, style = up ? label.style_label_up : label.style_label_down, color = up ? color.new(color.green, 25) : color.new(color.red, 25), textcolor = color.white, size = size.small, textalign = text.align_left)
+
+    // one signal per consolidation — re-arms when a fresh coil forms
+    dir := 0
+    confirmCnt := 0
+    brokenLevel := na
+    armed := false
+
+    alert((up ? "BREAK ▲ " : "BREAK ▼ ") + syminfo.ticker + " " + timeframe.period + " | Entry " + str.tostring(planEntry, format.mintick) + " | Stop " + str.tostring(planStop, format.mintick) + " | T1 " + str.tostring(planT1, format.mintick) + " | T2 " + str.tostring(planT2, format.mintick), alert.freq_once_per_bar)
+else if barstate.isconfirmed
+    // ============================== RETEST / FAIL TRACKING ==============================
+    if flipDir != 0 and bar_index > flipBar
+        float band = retestBandAtr * atrVal
+        if flipDir == 1
+            if enableRetest and not retestDone and bar_index - flipBar <= retestWindow and low <= flipLevel + band and close > flipLevel
+                sigRetestUp := true
+                retestDone  := true
+                alert("RETEST ▲ " + syminfo.ticker + " " + timeframe.period + " | broken resistance " + str.tostring(flipLevel, format.mintick) + " held — precision long entry", alert.freq_once_per_bar)
+            if close < flipLevel
+                if enableFailExit
+                    sigFailLong := true
+                    alert("FAIL ✕ " + syminfo.ticker + " " + timeframe.period + " | close back below " + str.tostring(flipLevel, format.mintick) + " — breakout premise dead", alert.freq_once_per_bar)
+                flipDir := 0
+                line.set_color(flipLine, color.new(color.gray, 40))
+                line.set_style(flipLine, line.style_dotted)
+                if not na(curZoneBox)
+                    box.set_border_color(curZoneBox, color.new(color.orange, 0))
+                if planDir != 0
+                    planStatus := "Failing — back inside zone"
+                // the coil is still intact: allow the next break of it to signal
+                if isConsolidating
+                    armed := true
+        else
+            if enableRetest and not retestDone and bar_index - flipBar <= retestWindow and high >= flipLevel - band and close < flipLevel
+                sigRetestDown := true
+                retestDone    := true
+                alert("RETEST ▼ " + syminfo.ticker + " " + timeframe.period + " | broken support " + str.tostring(flipLevel, format.mintick) + " rejected — precision short entry", alert.freq_once_per_bar)
+            if close > flipLevel
+                if enableFailExit
+                    sigFailShort := true
+                    alert("FAIL ✕ " + syminfo.ticker + " " + timeframe.period + " | close back above " + str.tostring(flipLevel, format.mintick) + " — breakout premise dead", alert.freq_once_per_bar)
+                flipDir := 0
+                line.set_color(flipLine, color.new(color.gray, 40))
+                line.set_style(flipLine, line.style_dotted)
+                if not na(curZoneBox)
+                    box.set_border_color(curZoneBox, color.new(color.orange, 0))
+                if planDir != 0
+                    planStatus := "Failing — back inside zone"
+                // the coil is still intact: allow the next break of it to signal
+                if isConsolidating
+                    armed := true
+
+    // ============================== STOP / TARGET TRACKING ==============================
+    // Stop first (a bar that wicks a target but closes through the stop counts
+    // as stopped — intrabar order is unknowable, so the loss is assumed).
+    // T1 and T2 are separate checks, NOT an else-if chain: one wide bar that
+    // trades through both levels credits both on the same bar.
+    if planDir == 1 and bar_index > planBar
+        if close < planStop
+            sigStopLong := true
+            planDir := 0
+            planStatus := "Stopped out"
+            alert("STOP ✕ " + syminfo.ticker + " " + timeframe.period + " | long stop " + str.tostring(planStop, format.mintick) + " closed through", alert.freq_once_per_bar)
+        else
+            if not planT1Hit and high >= planT1
+                sigT1Long := true
+                planT1Hit := true
+                planStatus := "T1 hit — consider stop to entry"
+                alert("T1 ◆ " + syminfo.ticker + " " + timeframe.period + " | target 1 " + str.tostring(planT1, format.mintick) + " tagged — consider partials / stop to entry", alert.freq_once_per_bar)
+            if planT1Hit and high >= planT2
+                sigT2Long := true
+                planDir := 0
+                planStatus := "Completed (T2)"
+                alert("T2 ◆ " + syminfo.ticker + " " + timeframe.period + " | target 2 " + str.tostring(planT2, format.mintick) + " tagged — plan complete", alert.freq_once_per_bar)
+    else if planDir == -1 and bar_index > planBar
+        if close > planStop
+            sigStopShort := true
+            planDir := 0
+            planStatus := "Stopped out"
+            alert("STOP ✕ " + syminfo.ticker + " " + timeframe.period + " | short stop " + str.tostring(planStop, format.mintick) + " closed through", alert.freq_once_per_bar)
+        else
+            if not planT1Hit and low <= planT1
+                sigT1Short := true
+                planT1Hit := true
+                planStatus := "T1 hit — consider stop to entry"
+                alert("T1 ◆ " + syminfo.ticker + " " + timeframe.period + " | target 1 " + str.tostring(planT1, format.mintick) + " tagged — consider partials / stop to entry", alert.freq_once_per_bar)
+            if planT1Hit and low <= planT2
+                sigT2Short := true
+                planDir := 0
+                planStatus := "Completed (T2)"
+                alert("T2 ◆ " + syminfo.ticker + " " + timeframe.period + " | target 2 " + str.tostring(planT2, format.mintick) + " tagged — plan complete", alert.freq_once_per_bar)
+
+    // a fresh coil supersedes previous tracking
+    if newConsolidation
+        if planDir != 0
+            planStatus := "Superseded by new coil"
+        planDir := 0
+        flipDir := 0
+
+// extend flip line while alive
+if flipDir != 0
+    line.set_x2(flipLine, bar_index)
+
+// extend plan lines while the plan is active
+if planDir != 0 and showTradePlan
+    line.set_x2(planStopLine, bar_index)
+    line.set_x2(planT1Line, bar_index)
+    line.set_x2(planT2Line, bar_index)
+    label.set_x(planStopLbl, bar_index + 1)
+    label.set_x(planT1Lbl, bar_index + 1)
+    label.set_x(planT2Lbl, bar_index + 1)
+
+// ============================== FORMING BOX (LIVE COIL PREVIEW) ==============================
+// Gated on `armed`: once a coil's breakout has signaled, the spent coil gets
+// no new preview (and thus can never be finalized as a duplicate zone), even
+// if the wick range technically stays tight after a body-basis breakout.
+if showConsolidationBox
+    if isConsolidating and armed and dir == 0 and not (sigBreakUp or sigBreakDown)
+        // a leftover preview from an older coil (its break attempt died after
+        // a new coil had already formed) must not be recycled across coils
+        if formingActive and formingCoilStart != coilStartBar
+            box.delete(formingBox)
+            formingBox := na
+            formingActive := false
+        if not formingActive and not na(coilStartBar)
+            formingBox := box.new(math.max(0, coilStartBar - lookbackPeriod), coilHigh, bar_index, coilLow, border_color = color.new(color.blue, 0), border_style = line.style_dashed, bgcolor = boxColor)
+            formingActive := true
+            formingCoilStart := coilStartBar
+        else if formingActive
+            // expand-only: the preview can widen but never shrinks, matching
+            // the boundaries a breakout will actually be tested against
+            box.set_top(formingBox, coilHigh)
+            box.set_bottom(formingBox, coilLow)
+            box.set_right(formingBox, bar_index)
+    else if formingActive and dir != 0
+        // a break is being confirmed: freeze the preview at the frozen zone values
+        box.set_top(formingBox, pendHigh)
+        box.set_bottom(formingBox, pendLow)
+        box.set_right(formingBox, bar_index)
+
+// ============================== COIL ENDED WITHOUT BREAKOUT: KEEP AS LIVE S/R ==============================
+if barstate.isconfirmed and formingActive and not isConsolidating and dir == 0 and not (sigBreakUp or sigBreakDown)
+    if endedCoilAge >= minCoilBars
+        // Freeze at the coil's structural boundaries (coilHigh/coilLow — the
+        // exact levels future breaks are tested against, so the grace-window
+        // zone-reuse equality check holds) and at the coil's true right edge
+        // (finalization can run bars later if a failed confirmation delayed it).
+        int rightBar = na(coilEndBar) ? bar_index - 1 : coilEndBar
+        box.set_top(formingBox, coilHigh)
+        box.set_bottom(formingBox, coilLow)
+        box.set_right(formingBox, rightBar)
+        box.set_border_color(formingBox, color.new(color.gray, 20))
+        box.set_border_style(formingBox, line.style_solid)
+        int tt = 0
+        int bt = 0
+        int startOff = bar_index - rightBar
+        int endOff   = math.min(bar_index - box.get_left(formingBox), 400)
+        if startOff <= endOff
+            for i = startOff to endOff
+                if high[i] >= coilHigh - touchBand
+                    tt += 1
+                if low[i] <= coilLow + touchBand
+                    bt += 1
+        string zTxt = "R×" + str.tostring(tt) + "  S×" + str.tostring(bt)
+        box.set_text(formingBox, zTxt)
+        box.set_text_size(formingBox, size.tiny)
+        box.set_text_color(formingBox, color.new(color.white, 25))
+        box.set_text_halign(formingBox, text.align_left)
+        box.set_text_valign(formingBox, text.align_top)
+        box tb = showZoneBands ? box.new(box.get_left(formingBox), coilHigh, rightBar, math.max(math.min(coilBodyHigh, coilHigh - touchBand), coilLow), border_color = na, bgcolor = resBandColor) : na
+        box bb = showZoneBands ? box.new(box.get_left(formingBox), math.min(math.max(coilBodyLow, coilLow + touchBand), coilHigh), rightBar, coilLow, border_color = na, bgcolor = supBandColor) : na
+        f_pushZone(formingBox, tb, bb, coilHigh, coilLow, 0, zTxt)
+    else
+        // coil too brief to matter — discard the preview
+        box.delete(formingBox)
+    formingBox := na
+    formingActive := false
+
+// ============================== ZONE MAINTENANCE (EXTEND / RESOLVE) ==============================
+if barstate.isconfirmed and array.size(zBoxes) > 0
+    for i = 0 to array.size(zBoxes) - 1
+        if array.get(zStates, i) == 0
+            float zoneTop = array.get(zTops, i)
+            float zoneBot = array.get(zBots, i)
+            box   zoneBx  = array.get(zBoxes, i)
+            box   bandTop = array.get(zTopBands, i)
+            box   bandBot = array.get(zBotBands, i)
+            if extendZones
+                if not na(zoneBx)
+                    box.set_right(zoneBx, bar_index)
+                if not na(bandTop)
+                    box.set_right(bandTop, bar_index)
+                if not na(bandBot)
+                    box.set_right(bandBot, bar_index)
+            // While the newest zone's break is being confirmed (or is still
+            // inside the grace window), its fate belongs to the confirmation
+            // machinery — a single touchBand poke must not pre-stamp it.
+            bool reservedForMachine = i == array.size(zBoxes) - 1 and (dir != 0 or (not na(coilEndBar) and bar_index - coilEndBar <= graceBars))
+            if not reservedForMachine
+                if close > zoneTop + touchBand
+                    array.set(zStates, i, 1)
+                    if not na(zoneBx)
+                        box.set_border_color(zoneBx, color.new(color.green, 0))
+                        box.set_text(zoneBx, array.get(zTexts, i) + "  ▲ broke up")
+                else if close < zoneBot - touchBand
+                    array.set(zStates, i, 2)
+                    if not na(zoneBx)
+                        box.set_border_color(zoneBx, color.new(color.red, 0))
+                        box.set_text(zoneBx, array.get(zTexts, i) + "  ▼ broke down")
+
+// ============================== SIGNALS / PLOTS ==============================
+plotshape(sigBreakUp,    title = "Breakout Up",       location = location.belowbar, color = color.green,               style = shape.triangleup,   size = size.normal, text = "BREAK")
+plotshape(sigBreakDown,  title = "Breakout Down",     location = location.abovebar, color = color.red,                 style = shape.triangledown, size = size.normal, text = "BREAK")
+plotshape(sigRetestUp,   title = "Retest Entry Up",   location = location.belowbar, color = color.teal,                style = shape.triangleup,   size = size.small,  text = "RETEST")
+plotshape(sigRetestDown, title = "Retest Entry Down", location = location.abovebar, color = color.maroon,              style = shape.triangledown, size = size.small,  text = "RETEST")
+plotshape(sigFailLong,   title = "Failed Break (long)",  location = location.abovebar, color = color.orange, style = shape.xcross, size = size.small, text = "FAIL")
+plotshape(sigFailShort,  title = "Failed Break (short)", location = location.belowbar, color = color.orange, style = shape.xcross, size = size.small, text = "FAIL")
+plotshape(sigStopLong,   title = "Stop Hit (long)",   location = location.abovebar, color = color.red, style = shape.xcross, size = size.small, text = "STOP")
+plotshape(sigStopShort,  title = "Stop Hit (short)",  location = location.belowbar, color = color.red, style = shape.xcross, size = size.small, text = "STOP")
+plotshape(sigT1Long,     title = "Target 1 (long)",   location = location.abovebar, color = color.teal, style = shape.diamond, size = size.tiny, text = "T1")
+plotshape(sigT1Short,    title = "Target 1 (short)",  location = location.belowbar, color = color.teal, style = shape.diamond, size = size.tiny, text = "T1")
+plotshape(sigT2Long,     title = "Target 2 (long)",   location = location.abovebar, color = color.teal, style = shape.diamond, size = size.tiny, text = "T2")
+plotshape(sigT2Short,    title = "Target 2 (short)",  location = location.belowbar, color = color.teal, style = shape.diamond, size = size.tiny, text = "T2")
+plotshape(sigFirstBreakUp,   title = "First Break Up (unconfirmed)",   location = location.belowbar, color = color.new(color.green, 40), style = shape.circle, size = size.tiny)
+plotshape(sigFirstBreakDown, title = "First Break Down (unconfirmed)", location = location.abovebar, color = color.new(color.red, 40),   style = shape.circle, size = size.tiny)
+plotshape(sigConfirmFailed,  title = "Confirmation Failed",            location = location.abovebar, color = color.new(color.gray, 20),  style = shape.xcross, size = size.tiny)
+
+bgcolor(isConsolidating ? color.new(color.yellow, 90) : dir != 0 ? color.new(color.orange, 92) : na, title = "Coil / Break-Tracking Background")
+
+// Plotted S/R = the expand-only TRADED boundaries (frozen at pend* while a
+// break is being confirmed). No more stair-step creep from the sliding window.
+// A spent coil (armed consumed by its signal) stops painting levels — the
+// flip line and zone box carry the structure from there.
+bool  coilLive    = (isConsolidating and armed) or dir != 0
+float displayHigh = dir != 0 ? pendTopLvl : (useCloseBasis ? coilBodyHigh : coilHigh)
+float displayLow  = dir != 0 ? pendBotLvl : (useCloseBasis ? coilBodyLow  : coilLow)
+plot(coilLive ? displayHigh : na, "Resistance", color = color.red,   style = plot.style_linebr, linewidth = 2)
+plot(coilLive ? displayLow  : na, "Support",    color = color.green, style = plot.style_linebr, linewidth = 2)
+
+// ============================== ALERTS ==============================
+alertcondition(sigBreakUp,    title = "Bullish Breakout",     message = "Confirmed bullish breakout on {{ticker}} ({{interval}})")
+alertcondition(sigBreakDown,  title = "Bearish Breakout",     message = "Confirmed bearish breakout on {{ticker}} ({{interval}})")
+alertcondition(newConsolidation and barstate.isconfirmed, title = "Entering Consolidation", message = "{{ticker}} entering consolidation ({{interval}})")
+alertcondition(sigFirstBreakUp,   title = "Raw Break Up (unconfirmed)",   message = "Unconfirmed break above the coil on {{ticker}} ({{interval}}) — confirmation counting")
+alertcondition(sigFirstBreakDown, title = "Raw Break Down (unconfirmed)", message = "Unconfirmed break below the coil on {{ticker}} ({{interval}}) — confirmation counting")
+alertcondition(sigRetestUp,   title = "Bullish Retest Entry", message = "Broken resistance retested and held on {{ticker}} ({{interval}}) — precision long entry")
+alertcondition(sigRetestDown, title = "Bearish Retest Entry", message = "Broken support retested and rejected on {{ticker}} ({{interval}}) — precision short entry")
+alertcondition(sigFailLong or sigFailShort, title = "Failed Breakout",  message = "Breakout FAILING on {{ticker}} ({{interval}}) — price closed back inside the zone")
+alertcondition(sigStopLong or sigStopShort, title = "Stop Hit",         message = "Stop level closed through on {{ticker}} ({{interval}})")
+alertcondition(sigT1Long or sigT1Short,     title = "Target 1 Hit",     message = "Target 1 tagged on {{ticker}} ({{interval}})")
+alertcondition(sigT2Long or sigT2Short,     title = "Target 2 Hit",     message = "Target 2 tagged on {{ticker}} ({{interval}}) — plan complete")
+
+// ============================== INFO TABLE ==============================
+var table infoTable = table.new(tablePosition, 2, 14, bgcolor = tblBgColor, border_width = 1)
+
+if barstate.islast
+    string statusTxt = isConsolidating ? "CONSOLIDATING (" + str.tostring(coilAge) + ")" : dir != 0 ? "BREAKING OUT" : planDir != 0 ? (planDir == 1 ? "LONG IN PLAY" : "SHORT IN PLAY") : "TRENDING"
+    color  statusCol = isConsolidating ? colConsolidating : dir != 0 ? colBreakingOut : planDir != 0 ? (planDir == 1 ? colTrendUp : colTrendDown) : colTrending
+    table.cell(infoTable, 0, 0, "Status", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 0, statusTxt, text_color = statusCol)
+    table.cell(infoTable, 0, 1, "Mode", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 1, useAdaptive ? (baselineMethod == "Median (robust)" ? "Adaptive · median" : "Adaptive · SMA") : "Fixed %", text_color = colMode)
+    table.cell(infoTable, 0, 2, "Range %", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 2, na(rangePercent) ? "n/a" : str.tostring(rangePercent, "#.##") + "%", text_color = colRange)
+    table.cell(infoTable, 0, 3, "Threshold", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 3, na(effectiveThreshold) ? "n/a" : str.tostring(effectiveThreshold, "#.##") + "%", text_color = colThreshold)
+    table.cell(infoTable, 0, 4, "Resistance", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 4, not coilLive or na(displayHigh) ? "—" : str.tostring(displayHigh, format.mintick), text_color = colResistance)
+    table.cell(infoTable, 0, 5, "Support", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 5, not coilLive or na(displayLow) ? "—" : str.tostring(displayLow, format.mintick), text_color = colSupport)
+
+    // live zone strength (touch counts against the current levels)
+    string strengthTxt = "—"
+    if coilLive and not na(displayHigh) and not na(touchBand) and not na(coilStartBar)
+        int tt = 0
+        int bt = 0
+        int span = math.min(bar_index - math.max(0, coilStartBar - lookbackPeriod), 400)
+        for i = 1 to span
+            if high[i] >= displayHigh - touchBand
+                tt += 1
+            if low[i] <= displayLow + touchBand
+                bt += 1
+        strengthTxt := "R×" + str.tostring(tt) + "  S×" + str.tostring(bt)
+    table.cell(infoTable, 0, 6, "Strength", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 6, strengthTxt, text_color = colRange)
+
+    table.cell(infoTable, 0, 7, "Confirm", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 7, str.tostring(confirmCnt) + " / " + str.tostring(breakoutConfirmation), text_color = colConfirm)
+
+    bool havePlan = not na(planEntry)
+    table.cell(infoTable, 0, 8, "Plan", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 8, planDir == 1 ? "LONG" : planDir == -1 ? "SHORT" : "—", text_color = colPlan)
+    table.cell(infoTable, 0, 9, "Entry", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 9, havePlan ? str.tostring(planEntry, format.mintick) : "—", text_color = colPlan)
+    table.cell(infoTable, 0, 10, "Stop", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 10, havePlan ? str.tostring(planStop, format.mintick) : "—", text_color = colPlan)
+    table.cell(infoTable, 0, 11, "Target 1", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 11, havePlan ? str.tostring(planT1, format.mintick) + (planT1Hit ? "  ✓" : "") : "—", text_color = colPlan)
+    table.cell(infoTable, 0, 12, "Target 2", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 12, havePlan ? str.tostring(planT2, format.mintick) : "—", text_color = colPlan)
+    table.cell(infoTable, 0, 13, "Plan State", text_color = tblLabelColor)
+    table.cell(infoTable, 1, 13, planStatus, text_color = colPlan)

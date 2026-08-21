@@ -1,0 +1,553 @@
+<title>Breakout Detector v7 Field Guide</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #F4F6F5;
+    --ink: #17201C;
+    --muted: #5B6763;
+    --border: #D7DDD9;
+    --card: #FFFFFF;
+    --bull: #178A5B;
+    --bear: #C4453F;
+    --teal: #1E8F87;
+    --orange: #B96F1E;
+    --coil: #8A7A1E;
+    --chip: #E9EEEC;
+    --code: #EDF1EF;
+  }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0E1210;
+      --ink: #E7ECE9;
+      --muted: #97A39D;
+      --border: #28322D;
+      --card: #141A17;
+      --bull: #35C285;
+      --bear: #E5605B;
+      --teal: #3BB8AF;
+      --orange: #E8A04C;
+      --coil: #D9C355;
+      --chip: #1B231F;
+      --code: #182019;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0E1210;
+    --ink: #E7ECE9;
+    --muted: #97A39D;
+    --border: #28322D;
+    --card: #141A17;
+    --bull: #35C285;
+    --bear: #E5605B;
+    --teal: #3BB8AF;
+    --orange: #E8A04C;
+    --coil: #D9C355;
+    --chip: #1B231F;
+    --code: #182019;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 20px 96px;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  header.masthead { padding: 56px 0 8px; border-bottom: 2px solid var(--ink); }
+  .kicker {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 10px;
+  }
+  h1 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 700; font-size: clamp(34px, 5.5vw, 52px);
+    line-height: 1.04; margin: 0 0 14px; text-wrap: balance;
+  }
+  .lede { font-size: 18px; color: var(--muted); max-width: 62ch; margin: 0 0 28px; }
+  h2 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 700; font-size: 27px; line-height: 1.15;
+    margin: 56px 0 6px; text-wrap: balance;
+  }
+  h2 .secno {
+    font-family: "IBM Plex Mono", monospace; font-weight: 500;
+    font-size: 15px; color: var(--muted); display: block; letter-spacing: .1em;
+    margin-bottom: 4px;
+  }
+  h3 {
+    font-family: "IBM Plex Sans Condensed", sans-serif; font-weight: 600;
+    font-size: 19px; margin: 28px 0 6px;
+  }
+  p { margin: 10px 0; max-width: 70ch; }
+  ul { margin: 8px 0 14px; padding-left: 22px; max-width: 70ch; }
+  li { margin: 5px 0; }
+  code, .mono {
+    font-family: "IBM Plex Mono", monospace; font-size: .88em;
+    background: var(--code); border-radius: 4px; padding: 1px 5px;
+  }
+  strong { font-weight: 600; }
+  figure { margin: 26px 0 34px; }
+  .panel {
+    background: #101613;
+    border: 1px solid #2B342F;
+    border-radius: 8px;
+    padding: 18px 14px 12px;
+    overflow-x: auto;
+  }
+  .panel svg { display: block; max-width: 100%; height: auto; min-width: 720px; margin: 0 auto; }
+  figcaption {
+    font-size: 14px; color: var(--muted); margin-top: 10px; max-width: 78ch;
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; margin: 14px 0 8px; }
+  .tablewrap { overflow-x: auto; }
+  th {
+    text-align: left; font-family: "IBM Plex Mono", monospace; font-weight: 500;
+    font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); border-bottom: 2px solid var(--ink);
+    padding: 8px 12px 6px 0; white-space: nowrap;
+  }
+  td { border-bottom: 1px solid var(--border); padding: 8px 12px 8px 0; vertical-align: top; }
+  td.g { font-family: "IBM Plex Mono", monospace; font-size: 13.5px; white-space: nowrap; }
+  td.def { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .glyph { font-size: 17px; line-height: 1; display: inline-block; min-width: 26px; }
+  .up { color: var(--bull); } .dn { color: var(--bear); }
+  .tl { color: var(--teal); } .or { color: var(--orange); }
+  .yl { color: var(--coil); } .gy { color: var(--muted); }
+  .tag {
+    display: inline-block; font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px; letter-spacing: .06em; background: var(--chip);
+    border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+    margin: 0 6px 6px 0; white-space: nowrap;
+  }
+  .grouphead td {
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); padding-top: 22px; border-bottom: 1px solid var(--ink);
+  }
+  .note {
+    border-left: 3px solid var(--orange); background: var(--chip);
+    padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 18px 0; max-width: 74ch;
+  }
+  .note p { margin: 4px 0; }
+  .swatch { display:inline-block; width: 22px; height: 13px; border-radius: 3px; vertical-align: -1px; }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+</style>
+
+<div class="wrap">
+<header class="masthead">
+  <p class="kicker">MP_Consolidation_Breakout_V7.pine · Pine Script v6 · overlay indicator</p>
+  <h1>Consolidation &amp; Breakout Detector v7</h1>
+  <p class="lede">A complete field guide to every concept, signal, and setting: how the script finds coils, confirms breakouts, and manages the whole trade — plan, retest, targets, and exits.</p>
+</header>
+
+<h2><span class="secno">§1</span>What it does</h2>
+<p>The script watches for <strong>consolidations</strong> — stretches where price coils into an unusually tight range — and treats each one as a setup. When price closes beyond the coil's boundary and <em>holds</em> there, it fires a confirmed <strong>BREAK</strong> signal and draws a full <strong>trade plan</strong>: the exact entry level, a stop, and two measured-move targets. From there it keeps working the trade: it flags the <strong>retest</strong> (price returning to the broken level and holding — the precision entry), warns when a breakout is <strong>failing</strong>, and marks the <strong>stop</strong> and both <strong>targets</strong> as they're hit. Every consolidation also leaves behind a frozen <strong>support/resistance zone</strong> that stays on the chart, extends forward until decisively broken, and flips roles when it breaks.</p>
+<p>Everything confirms on bar close and nothing repaints: zones freeze the moment a break starts, and plan levels never move after they're drawn.</p>
+
+<h2><span class="secno">§2</span>The signal lifecycle</h2>
+<p>Each setup moves through the same pipeline. Understanding it explains every mark the script prints.</p>
+
+<figure id="fig-lifecycle">
+  <div class="panel">
+  <svg viewBox="0 0 1560 470" role="img" aria-label="Pipeline from trending market to coil, raw break, confirmed breakout, and the three outcome tracks: retest entry, targets, or fail and stop exits.">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#AEB8B2"/>
+      </marker>
+    </defs>
+    <!-- nodes -->
+    <g font-family="IBM Plex Mono, monospace">
+      <!-- trending -->
+      <rect x="36" y="160" width="170" height="96" rx="8" fill="none" stroke="#5A655F" stroke-width="1.5"/>
+      <text x="121" y="200" fill="#D5DCD7" font-size="15" text-anchor="middle" font-weight="500">TRENDING</text>
+      <text x="121" y="222" fill="#8B948E" font-size="11.5" text-anchor="middle">no zone live</text>
+      <!-- coil -->
+      <rect x="290" y="160" width="196" height="96" rx="8" fill="rgba(217,195,85,0.07)" stroke="#D9C355" stroke-width="1.5"/>
+      <text x="388" y="196" fill="#E7CD5A" font-size="15" text-anchor="middle" font-weight="500">COIL</text>
+      <text x="388" y="216" fill="#B8AE79" font-size="11.5" text-anchor="middle">yellow background</text>
+      <text x="388" y="233" fill="#B8AE79" font-size="11.5" text-anchor="middle">boundaries expand only</text>
+      <!-- raw break -->
+      <rect x="576" y="160" width="204" height="96" rx="8" fill="none" stroke="#E8A04C" stroke-width="1.5"/>
+      <text x="678" y="196" fill="#EFA23F" font-size="15" text-anchor="middle" font-weight="500">RAW BREAK ○</text>
+      <text x="678" y="216" fill="#B08A5B" font-size="11.5" text-anchor="middle">zone FREEZES here</text>
+      <text x="678" y="233" fill="#B08A5B" font-size="11.5" text-anchor="middle">orange background</text>
+      <!-- confirmed -->
+      <rect x="872" y="160" width="216" height="96" rx="8" fill="rgba(51,196,129,0.07)" stroke="#33C481" stroke-width="2"/>
+      <text x="980" y="196" fill="#33C481" font-size="15" text-anchor="middle" font-weight="500">BREAK ▲▼</text>
+      <text x="980" y="216" fill="#7FAE97" font-size="11.5" text-anchor="middle">trade plan drawn</text>
+      <text x="980" y="233" fill="#7FAE97" font-size="11.5" text-anchor="middle">flip line starts · alert</text>
+      <!-- outcomes -->
+      <rect x="1190" y="52" width="332" height="72" rx="8" fill="none" stroke="#3BB8AF" stroke-width="1.5"/>
+      <text x="1356" y="82" fill="#35B8AE" font-size="14" text-anchor="middle" font-weight="500">RETEST ▲▼</text>
+      <text x="1356" y="102" fill="#7B9E9A" font-size="11.5" text-anchor="middle">pullback holds level → precision entry</text>
+      <rect x="1190" y="172" width="332" height="72" rx="8" fill="none" stroke="#3BB8AF" stroke-width="1.5"/>
+      <text x="1356" y="202" fill="#35B8AE" font-size="14" text-anchor="middle" font-weight="500">T1 ◆ → T2 ◆</text>
+      <text x="1356" y="222" fill="#7B9E9A" font-size="11.5" text-anchor="middle">measured-move targets tagged</text>
+      <rect x="1190" y="292" width="332" height="72" rx="8" fill="none" stroke="#E5605B" stroke-width="1.5"/>
+      <text x="1356" y="322" fill="#E5605B" font-size="14" text-anchor="middle" font-weight="500">FAIL ✕ · STOP ✕</text>
+      <text x="1356" y="342" fill="#B07E7A" font-size="11.5" text-anchor="middle">back inside zone · stop closed through</text>
+      <!-- arrows -->
+      <line x1="206" y1="208" x2="284" y2="208" stroke="#AEB8B2" stroke-width="1.5" marker-end="url(#ah)"/>
+      <text x="245" y="196" fill="#8B948E" font-size="11" text-anchor="middle">range tightens</text>
+      <line x1="486" y1="208" x2="570" y2="208" stroke="#AEB8B2" stroke-width="1.5" marker-end="url(#ah)"/>
+      <text x="528" y="134" fill="#8B948E" font-size="11" text-anchor="middle">close beyond edge</text>
+      <text x="528" y="150" fill="#8B948E" font-size="11" text-anchor="middle">age ≥ min coil bars</text>
+      <line x1="780" y1="208" x2="866" y2="208" stroke="#AEB8B2" stroke-width="1.5" marker-end="url(#ah)"/>
+      <text x="823" y="134" fill="#8B948E" font-size="11" text-anchor="middle">N total closes</text>
+      <text x="823" y="150" fill="#8B948E" font-size="11" text-anchor="middle">hold beyond level</text>
+      <line x1="1088" y1="186" x2="1184" y2="94" stroke="#AEB8B2" stroke-width="1.5" marker-end="url(#ah)"/>
+      <line x1="1088" y1="208" x2="1184" y2="208" stroke="#AEB8B2" stroke-width="1.5" marker-end="url(#ah)"/>
+      <line x1="1088" y1="230" x2="1184" y2="322" stroke="#AEB8B2" stroke-width="1.5" marker-end="url(#ah)"/>
+      <!-- failed confirmation return -->
+      <path d="M 678 256 L 678 330 L 388 330 L 388 262" fill="none" stroke="#8B948E" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#ah)"/>
+      <text x="533" y="318" fill="#8B948E" font-size="11" text-anchor="middle">close back through level → attempt dies (grey ✕)</text>
+      <!-- one signal note -->
+      <text x="388" y="392" fill="#8B948E" font-size="11.5" text-anchor="middle">one signal per coil —</text>
+      <text x="388" y="408" fill="#8B948E" font-size="11.5" text-anchor="middle">re-arms when a fresh coil forms</text>
+      <text x="980" y="392" fill="#8B948E" font-size="11.5" text-anchor="middle">grace window: a break can still signal</text>
+      <text x="980" y="408" fill="#8B948E" font-size="11.5" text-anchor="middle">for N bars after the coil ends</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption><b>Fig. 1 — The lifecycle.</b> A coil must live at least <i>Min Coil Bars</i> before its break counts. The first close beyond the boundary is the <i>raw break</i> (small circle on the chart) — the zone freezes at that instant so breakout candles can't inflate the level they're breaking. The break must then hold for <i>Confirmation Closes</i> total closes; only then does BREAK print. A failed attempt marks a grey ✕ and the machine resets without re-entering the same direction that just failed.</figcaption>
+</figure>
+
+<h3>Concepts behind the pipeline</h3>
+<ul>
+  <li><strong>Prior-bar window.</strong> The high–low range is measured over the lookback window ending at the <em>previous</em> bar, so a breakout candle can never distort the very level it is breaking.</li>
+  <li><strong>Expand-only boundaries.</strong> While a coil lives, its edges can widen but never shrink. The breakout level is the structural boundary you see — never a decayed artifact of old bars aging out of a rolling window.</li>
+  <li><strong>Freeze at the raw break.</strong> The zone's edges, touch counts, and traded levels are captured on the raw-break bar. Everything drawn afterward — box, bands, plan — uses those frozen values.</li>
+  <li><strong>Buffered confirmation.</strong> With a breakout buffer set, confirmation closes are held to the same standard as the break itself: a close between the level and level+buffer stalls the count; a close back through the level kills the attempt.</li>
+  <li><strong>One signal per coil.</strong> After a confirmed BREAK the coil is spent. A fresh consolidation must form before the next signal can fire.</li>
+</ul>
+
+<h2><span class="secno">§3</span>Zone anatomy</h2>
+<p>Zones are drawn as boxes with shaded <em>bands</em> along their edges, because support and resistance are areas, not lines.</p>
+
+<figure id="fig-zone">
+  <div class="panel">
+  <svg viewBox="0 0 1560 640" role="img" aria-label="Schematic chart showing a coil inside a zone box with resistance and support bands, touch counts, a confirmed breakout candle, the frozen zone, the flip line extending right, and a retest.">
+    <defs>
+      <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#AEB8B2"/>
+      </marker>
+    </defs>
+    <!-- background tints -->
+    <rect x="330" y="70" width="560" height="470" fill="rgba(217,195,85,0.06)"/>
+    <rect x="900" y="70" width="120" height="470" fill="rgba(232,160,76,0.07)"/>
+    <text x="610" y="94" fill="#B8AE79" font-size="11.5" font-family="IBM Plex Mono, monospace" text-anchor="middle">coiling — yellow background</text>
+    <text x="960" y="94" fill="#B08A5B" font-size="11.5" font-family="IBM Plex Mono, monospace" text-anchor="middle">confirming</text>
+    <!-- zone box -->
+    <rect x="330" y="200" width="560" height="180" fill="rgba(108,150,238,0.10)" stroke="#33C481" stroke-width="2"/>
+    <!-- bands -->
+    <rect x="330" y="200" width="560" height="34" fill="rgba(229,83,91,0.18)"/>
+    <rect x="330" y="346" width="560" height="34" fill="rgba(51,196,129,0.16)"/>
+    <line x1="330" y1="234" x2="890" y2="234" stroke="#E5535B" stroke-width="1" stroke-dasharray="4 4"/>
+    <line x1="330" y1="346" x2="890" y2="346" stroke="#33C481" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="344" y="222" fill="#E9DFDA" font-size="12" font-family="IBM Plex Mono, monospace">R×5&#160;&#160;S×7</text>
+    <!-- pre-coil candles (drift in) -->
+    <g stroke-width="1.4">
+      <line x1="120" y1="120" x2="120" y2="210" stroke="#E5535B"/><rect x="112" y="135" width="16" height="52" fill="#E5535B"/>
+      <line x1="160" y1="150" x2="160" y2="250" stroke="#33C481"/><rect x="152" y="170" width="16" height="46" fill="#33C481"/>
+      <line x1="200" y1="140" x2="200" y2="260" stroke="#E5535B"/><rect x="192" y="160" width="16" height="66" fill="#E5535B"/>
+      <line x1="240" y1="190" x2="240" y2="290" stroke="#E5535B"/><rect x="232" y="205" width="16" height="60" fill="#E5535B"/>
+      <line x1="280" y1="220" x2="280" y2="310" stroke="#33C481"/><rect x="272" y="245" width="16" height="42" fill="#33C481"/>
+    </g>
+    <!-- coil candles inside the zone -->
+    <g stroke-width="1.4">
+      <line x1="360" y1="206" x2="360" y2="330" stroke="#E5535B"/><rect x="352" y="240" width="16" height="60" fill="#E5535B"/>
+      <line x1="400" y1="230" x2="400" y2="360" stroke="#33C481"/><rect x="392" y="262" width="16" height="66" fill="#33C481"/>
+      <line x1="440" y1="216" x2="440" y2="336" stroke="#E5535B"/><rect x="432" y="248" width="16" height="58" fill="#E5535B"/>
+      <line x1="480" y1="250" x2="480" y2="374" stroke="#33C481"/><rect x="472" y="282" width="16" height="62" fill="#33C481"/>
+      <line x1="520" y1="228" x2="520" y2="352" stroke="#E5535B"/><rect x="512" y="258" width="16" height="60" fill="#E5535B"/>
+      <line x1="560" y1="210" x2="560" y2="330" stroke="#33C481"/><rect x="552" y="238" width="16" height="58" fill="#33C481"/>
+      <line x1="600" y1="238" x2="600" y2="366" stroke="#E5535B"/><rect x="592" y="268" width="16" height="64" fill="#E5535B"/>
+      <line x1="640" y1="222" x2="640" y2="344" stroke="#33C481"/><rect x="632" y="252" width="16" height="58" fill="#33C481"/>
+      <line x1="680" y1="240" x2="680" y2="368" stroke="#E5535B"/><rect x="672" y="272" width="16" height="62" fill="#E5535B"/>
+      <line x1="720" y1="214" x2="720" y2="338" stroke="#33C481"/><rect x="712" y="244" width="16" height="60" fill="#33C481"/>
+      <line x1="760" y1="236" x2="760" y2="360" stroke="#33C481"/><rect x="752" y="262" width="16" height="66" fill="#33C481"/>
+      <line x1="800" y1="224" x2="800" y2="348" stroke="#E5535B"/><rect x="792" y="252" width="16" height="62" fill="#E5535B"/>
+      <line x1="840" y1="232" x2="840" y2="352" stroke="#33C481"/><rect x="832" y="258" width="16" height="62" fill="#33C481"/>
+    </g>
+    <!-- breakout + confirmation candles -->
+    <g stroke-width="1.6">
+      <line x1="930" y1="140" x2="930" y2="356" stroke="#33C481"/><rect x="921" y="152" width="18" height="180" fill="#33C481"/>
+      <line x1="978" y1="118" x2="978" y2="200" stroke="#33C481"/><rect x="969" y="128" width="18" height="52" fill="#33C481"/>
+    </g>
+    <circle cx="930" cy="392" r="6" fill="none" stroke="#33C481" stroke-width="2"/>
+    <text x="930" y="428" fill="#33C481" font-size="13" font-family="IBM Plex Mono, monospace" text-anchor="middle" font-weight="500">▲ BREAK</text>
+    <text x="930" y="446" fill="#7FAE97" font-size="11" font-family="IBM Plex Mono, monospace" text-anchor="middle">raw break ○, then confirmed</text>
+    <!-- flip line -->
+    <line x1="890" y1="200" x2="1520" y2="200" stroke="#33C481" stroke-width="3.5"/>
+    <text x="1508" y="156" fill="#33C481" font-size="12.5" font-family="IBM Plex Mono, monospace" text-anchor="end">flip level — broken resistance</text>
+    <text x="1508" y="176" fill="#33C481" font-size="12.5" font-family="IBM Plex Mono, monospace" text-anchor="end">now acts as support</text>
+    <!-- retest candles -->
+    <g stroke-width="1.4">
+      <line x1="1080" y1="130" x2="1080" y2="196" stroke="#E5535B"/><rect x="1072" y="140" width="16" height="46" fill="#E5535B"/>
+      <line x1="1130" y1="150" x2="1130" y2="212" stroke="#33C481"/><rect x="1122" y="162" width="16" height="40" fill="#33C481"/>
+      <line x1="1180" y1="120" x2="1180" y2="180" stroke="#33C481"/><rect x="1172" y="130" width="16" height="42" fill="#33C481"/>
+    </g>
+    <text x="1130" y="248" fill="#35B8AE" font-size="13" font-family="IBM Plex Mono, monospace" text-anchor="middle" font-weight="500">▲ RETEST</text>
+    <text x="1130" y="266" fill="#7B9E9A" font-size="11" font-family="IBM Plex Mono, monospace" text-anchor="middle">wick into band, close back above</text>
+    <!-- labels with leaders -->
+    <g font-family="IBM Plex Mono, monospace" font-size="12" fill="#D5DCD7">
+      <line x1="470" y1="150" x2="470" y2="196" stroke="#AEB8B2" stroke-width="1" marker-end="url(#ah2)"/>
+      <text x="478" y="146" fill="#E5535B">resistance band — wick high to body high</text>
+      <line x1="470" y1="430" x2="470" y2="384" stroke="#AEB8B2" stroke-width="1" marker-end="url(#ah2)"/>
+      <text x="478" y="446" fill="#33C481">support band — body low to wick low</text>
+      <text x="330" y="470" fill="#8B948E">touch counts R×n S×m = bars that tested each edge (zone strength)</text>
+      <text x="330" y="492" fill="#8B948E">solid border = frozen zone (green/red = broke up/down · grey = ended unbroken, stays live S/R)</text>
+      <text x="330" y="514" fill="#8B948E">dashed blue border (not shown) = still forming — edges can still expand</text>
+    </g>
+    <!-- axis line -->
+    <line x1="60" y1="560" x2="1520" y2="560" stroke="#3A453F" stroke-width="1"/>
+    <g font-family="IBM Plex Mono, monospace" font-size="11" fill="#6E7A74">
+      <text x="610" y="584" text-anchor="middle">coil (zone frozen at raw break)</text>
+      <text x="960" y="584" text-anchor="middle">breakout</text>
+      <text x="1250" y="584" text-anchor="middle">flip level extends until reclaimed</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption><b>Fig. 2 — Anatomy of a zone.</b> The box outlines the full wick range; the shaded strips are the actual S/R <i>bands</i>, spanning from the wick extreme to the body extreme on each side. <code>R×n&nbsp;S×m</code> counts how many bars touched each edge — more touches, more meaningful edge. After a confirmed break, the broken level extends forward as a thick <i>flip line</i>: broken resistance acts as new support (and vice versa). If price closes back through it, the line greys out and a FAIL ✕ prints.</figcaption>
+</figure>
+
+<h3>Zone behavior rules</h3>
+<ul>
+  <li><strong>Forming (dashed blue border):</strong> the live coil preview. It can widen, never shrink.</li>
+  <li><strong>Frozen (solid border):</strong> after a breakout (green = up, red = down) or after the coil ends without one (grey). Frozen edges never move.</li>
+  <li><strong>Unbroken zones stay live:</strong> a grey zone keeps extending right as active S/R until a close clears an edge by the touch/break band; then it's stamped "▲ broke up" or "▼ broke down".</li>
+  <li><strong>Level basis:</strong> with <em>Wicks</em> (default) breaks are tested against wick extremes; with <em>Closes</em>, against body extremes — immune to one-off spike wicks, earlier entries.</li>
+</ul>
+
+<h2><span class="secno">§4</span>Two detection engines</h2>
+<p>What counts as "tight"? The script measures the window's high-to-low range as a percentage of price, then compares it to a threshold. The two modes differ only in where that threshold comes from.</p>
+
+<figure id="fig-detection">
+  <div class="panel">
+  <svg viewBox="0 0 1560 500" role="img" aria-label="Side-by-side comparison: fixed mode uses a flat percent threshold; adaptive mode scales the threshold from the symbol's own typical range and locks it when a coil starts.">
+    <g font-family="IBM Plex Mono, monospace">
+      <!-- left: fixed -->
+      <text x="400" y="48" fill="#D5DCD7" font-size="16" text-anchor="middle" font-weight="500">FIXED (% OF PRICE)</text>
+      <rect x="60" y="70" width="680" height="330" fill="none" stroke="#2B342F" stroke-width="1"/>
+      <!-- coil region shading -->
+      <rect x="470" y="70" width="270" height="330" fill="rgba(217,195,85,0.08)"/>
+      <!-- threshold flat -->
+      <line x1="60" y1="270" x2="740" y2="270" stroke="#8B948E" stroke-width="1.6" stroke-dasharray="7 5"/>
+      <text x="78" y="258" fill="#8B948E" font-size="12">threshold = 5% (constant)</text>
+      <!-- range% line -->
+      <polyline points="60,120 130,150 200,130 270,180 340,170 410,220 470,270 540,300 610,290 680,310 740,300"
+        fill="none" stroke="#6C96EE" stroke-width="2.5"/>
+      <text x="150" y="112" fill="#6C96EE" font-size="12">range % of price</text>
+      <text x="605" y="356" fill="#B8AE79" font-size="12" text-anchor="middle">range ≤ threshold</text>
+      <text x="605" y="374" fill="#B8AE79" font-size="12" text-anchor="middle">→ consolidating</text>
+      <text x="400" y="438" fill="#8B948E" font-size="12" text-anchor="middle">same bar % everywhere — simple, but a 5% coil on an index</text>
+      <text x="400" y="456" fill="#8B948E" font-size="12" text-anchor="middle">is not a 5% coil on a small-cap</text>
+      <!-- right: adaptive -->
+      <text x="1160" y="48" fill="#D5DCD7" font-size="16" text-anchor="middle" font-weight="500">ADAPTIVE (VOLATILITY-RELATIVE)</text>
+      <rect x="820" y="70" width="680" height="330" fill="none" stroke="#2B342F" stroke-width="1"/>
+      <rect x="1240" y="70" width="260" height="330" fill="rgba(217,195,85,0.08)"/>
+      <!-- baseline (typical range) -->
+      <polyline points="820,150 890,160 960,150 1030,170 1100,180 1170,195 1240,205 1310,215 1380,222 1500,228"
+        fill="none" stroke="#3A453F" stroke-width="2"/>
+      <text x="905" y="140" fill="#6E7A74" font-size="12">typical range (median of last N bars)</text>
+      <!-- threshold = 0.6 x baseline, locks at coil onset -->
+      <polyline points="820,226 890,232 960,226 1030,238 1100,244 1170,253 1240,259"
+        fill="none" stroke="#8B948E" stroke-width="1.6" stroke-dasharray="7 5"/>
+      <line x1="1240" y1="259" x2="1500" y2="259" stroke="#E8A04C" stroke-width="2" stroke-dasharray="7 5"/>
+      <text x="1258" y="247" fill="#EFA23F" font-size="12">LOCKED at coil onset (anti-droop)</text>
+      <text x="838" y="216" fill="#8B948E" font-size="12">threshold = 0.6 × typical</text>
+      <!-- range% line -->
+      <polyline points="820,120 890,145 960,135 1030,175 1100,185 1170,230 1240,259 1310,300 1380,290 1500,305"
+        fill="none" stroke="#6C96EE" stroke-width="2.5"/>
+      <!-- lock glyph -->
+      <rect x="1228" y="272" width="24" height="18" rx="3" fill="none" stroke="#EFA23F" stroke-width="2"/>
+      <path d="M 1233 272 v-6 a7 7 0 0 1 14 0 v6" fill="none" stroke="#EFA23F" stroke-width="2"/>
+      <text x="1370" y="356" fill="#B8AE79" font-size="12" text-anchor="middle">coil judged against the</text>
+      <text x="1370" y="374" fill="#B8AE79" font-size="12" text-anchor="middle">threshold as it was at onset</text>
+      <text x="1160" y="438" fill="#8B948E" font-size="12" text-anchor="middle">auto-scales to any symbol/timeframe; the lock stops the baseline from</text>
+      <text x="1160" y="456" fill="#8B948E" font-size="12" text-anchor="middle">absorbing the coil's own tight bars and flickering a long coil off/on</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption><b>Fig. 3 — Fixed vs Adaptive.</b> Fixed mode calls the market consolidated when the window's range is below a set percent of price. Adaptive mode (recommended) compares the range to the symbol's <i>own</i> typical range — the median (robust to one-off volatility spikes) or SMA of the last <i>Baseline Length</i> readings — times the <i>Compression Factor</i>. The threshold <b>locks at coil onset</b>: without the lock, the coil's own tight readings would drag the baseline down and a long coil would flicker off and on, re-arming duplicate signals.</figcaption>
+</figure>
+
+<h2><span class="secno">§5</span>The trade plan</h2>
+<p>On every confirmed BREAK, all plan levels are computed from the frozen zone — they never move afterward.</p>
+
+<figure id="fig-plan">
+  <div class="panel">
+  <svg viewBox="0 0 1560 560" role="img" aria-label="Trade plan geometry for a long breakout: entry at the broken level, targets at one and two zone-heights above it, and the three stop placement options below it.">
+    <defs>
+      <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#AEB8B2"/>
+      </marker>
+    </defs>
+    <g font-family="IBM Plex Mono, monospace">
+      <!-- zone -->
+      <rect x="140" y="340" width="560" height="150" fill="rgba(108,150,238,0.10)" stroke="#33C481" stroke-width="2"/>
+      <text x="160" y="366" fill="#8B948E" font-size="12">frozen zone</text>
+      <!-- entry line -->
+      <line x1="140" y1="340" x2="1420" y2="340" stroke="#E7ECE9" stroke-width="2.5"/>
+      <text x="1432" y="345" fill="#E7ECE9" font-size="13" font-weight="500">ENTRY</text>
+      <text x="720" y="330" fill="#AEB8B2" font-size="12">the broken level</text>
+      <!-- T1 / T2 -->
+      <line x1="140" y1="200" x2="1420" y2="200" stroke="#35B8AE" stroke-width="1.8" stroke-dasharray="3 5"/>
+      <text x="1432" y="205" fill="#35B8AE" font-size="13" font-weight="500">T1</text>
+      <line x1="140" y1="60" x2="1420" y2="60" stroke="#35B8AE" stroke-width="1.8" stroke-dasharray="3 5"/>
+      <text x="1432" y="65" fill="#35B8AE" font-size="13" font-weight="500">T2</text>
+      <!-- zone height bracket -->
+      <line x1="760" y1="340" x2="760" y2="490" stroke="#AEB8B2" stroke-width="1.3" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+      <text x="776" y="420" fill="#D5DCD7" font-size="12.5">zone height H</text>
+      <!-- T1 bracket -->
+      <line x1="980" y1="340" x2="980" y2="200" stroke="#AEB8B2" stroke-width="1.3" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+      <text x="996" y="274" fill="#35B8AE" font-size="12.5">T1 = entry + 1.0 × H</text>
+      <!-- T2 bracket -->
+      <line x1="1240" y1="340" x2="1240" y2="60" stroke="#AEB8B2" stroke-width="1.3" marker-start="url(#ah3)" marker-end="url(#ah3)"/>
+      <text x="1256" y="150" fill="#35B8AE" font-size="12.5">T2 = entry + 2.0 × H</text>
+      <!-- stops -->
+      <line x1="140" y1="415" x2="700" y2="415" stroke="#E5605B" stroke-width="2" stroke-dasharray="8 5"/>
+      <text x="330" y="435" fill="#E5605B" font-size="12.5">STOP A — zone midpoint (default, tight)</text>
+      <line x1="140" y1="490" x2="700" y2="490" stroke="#E5605B" stroke-width="2" stroke-dasharray="8 5"/>
+      <text x="330" y="516" fill="#E5605B" font-size="12.5">STOP B — opposite zone edge (classic)</text>
+      <line x1="840" y1="440" x2="1420" y2="440" stroke="#E5605B" stroke-width="2" stroke-dasharray="2 5"/>
+      <text x="960" y="462" fill="#E5605B" font-size="12.5">STOP C — entry − (multiple × ATR)</text>
+      <!-- notes -->
+      <text x="140" y="546" fill="#8B948E" font-size="12">mirror-image for shorts · pick ONE stop mode in settings — all three shown here for comparison</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption><b>Fig. 4 — Plan geometry (long shown).</b> Entry is always the broken level. Targets are measured moves: the zone's height projected from the entry (1.0× and 2.0× by default — keep T2 ≥ T1). Stops come in three flavors: <b>zone midpoint</b> (tight — the premise is already suspect halfway back into the zone), <b>opposite zone edge</b> (the classic full-zone stop), or an <b>ATR multiple</b> beyond entry. Stops resolve on closes; targets on touches. One wide bar through both targets credits T1 and T2 on the same bar.</figcaption>
+</figure>
+
+<h3>How the plan resolves</h3>
+<ul>
+  <li><strong>STOP ✕ (red):</strong> a bar <em>closes</em> through the stop. A wick through it doesn't count; and a bar that wicks a target but closes through the stop counts as stopped — intrabar order is unknowable, so the loss is assumed.</li>
+  <li><strong>T1 ◆:</strong> price touches target 1. The plan suggests taking partials / moving the stop to entry (the info table's Plan State says so).</li>
+  <li><strong>T2 ◆:</strong> price touches target 2 after T1 — plan complete.</li>
+  <li><strong>FAIL ✕ (orange):</strong> independent of the stop — a close back through the broken level means the breakout premise is dead, usually long before the stop is hit. Treat it as the early exit warning.</li>
+  <li><strong>Superseded:</strong> a fresh coil forming while a plan is open closes out the old tracking — new structure outranks an old trade.</li>
+</ul>
+
+<h2><span class="secno">§6</span>Retest entries</h2>
+<p>Chasing a confirmation close means paying the worst price of the move so far. The retest signal waits for the market to come back: after a BREAK, if price pulls back to within the <em>Retest Band</em> (an ATR multiple) of the broken level and <em>closes back in the breakout direction</em>, RETEST prints — an entry at nearly the level itself, with the stop naturally close by. Retests are only valid within the <em>Retest Window</em> (bars since the breakout), and each breakout gets at most one.</p>
+
+<h2><span class="secno">§7</span>Every mark on the chart</h2>
+<div class="tablewrap" id="legend-table">
+<table>
+  <thead><tr><th>Mark</th><th>Name</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td class="g"><span class="glyph up">▲</span> BREAK</td><td>Confirmed breakout up</td><td>Coil broke upward and held for the required closes. Label shows Entry / Stop / T1 / T2.</td></tr>
+    <tr><td class="g"><span class="glyph dn">▼</span> BREAK</td><td>Confirmed breakout down</td><td>Same, downward.</td></tr>
+    <tr><td class="g"><span class="glyph tl">▲</span> RETEST</td><td>Retest entry (long)</td><td>Pullback tagged the broken level and closed back above — precision long entry.</td></tr>
+    <tr><td class="g"><span class="glyph dn">▼</span> RETEST</td><td>Retest entry (short)</td><td>Bounce tagged broken support from below and closed back under it.</td></tr>
+    <tr><td class="g"><span class="glyph up">○</span> <span class="glyph dn">○</span></td><td>Raw break (unconfirmed)</td><td>The first close beyond the boundary — confirmation counting has started. Small faded circle.</td></tr>
+    <tr><td class="g"><span class="glyph gy">✕</span></td><td>Confirmation failed</td><td>A tracked break closed back through the level before confirming. Tiny grey ✕.</td></tr>
+    <tr><td class="g"><span class="glyph or">✕</span> FAIL</td><td>Failed breakout</td><td>After a confirmed BREAK, price closed back inside the zone. Premise dead — early exit warning.</td></tr>
+    <tr><td class="g"><span class="glyph dn">✕</span> STOP</td><td>Stop hit</td><td>A bar closed through the plan's stop level.</td></tr>
+    <tr><td class="g"><span class="glyph tl">◆</span> T1 / T2</td><td>Targets tagged</td><td>Measured-move targets touched. T2 completes the plan.</td></tr>
+    <tr><td class="g"><span class="swatch" style="background:rgba(217,195,85,.45)"></span></td><td>Yellow background</td><td>Consolidating right now.</td></tr>
+    <tr><td class="g"><span class="swatch" style="background:rgba(232,160,76,.45)"></span></td><td>Orange background</td><td>A break is being confirmed.</td></tr>
+    <tr><td class="g"><span class="swatch" style="background:#C4453F"></span> / <span class="swatch" style="background:#178A5B"></span></td><td>Resistance / Support lines</td><td>The live coil's traded boundaries (frozen while a break confirms). Stop painting once the coil's signal is spent.</td></tr>
+    <tr><td class="g"><span class="swatch" style="background:#178A5B;height:5px"></span></td><td>Flip line</td><td>The broken level extended forward — support/resistance role reversed. Greys out when reclaimed.</td></tr>
+    <tr><td class="g">▭ dashed</td><td>Forming zone</td><td>Live coil preview — edges can still expand.</td></tr>
+    <tr><td class="g">▭ solid</td><td>Frozen zone</td><td>Green/red border = broke up/down; grey = ended unbroken, still live S/R. Shows R×n S×m touch counts.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="secno">§8</span>The info table</h2>
+<p>The on-chart table (position configurable) is the live dashboard:</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Row</th><th>Shows</th></tr></thead>
+  <tbody>
+    <tr><td class="g">Status</td><td><span class="mono">CONSOLIDATING (n)</span> with the coil's age, <span class="mono">BREAKING OUT</span> while confirming, <span class="mono">LONG/SHORT IN PLAY</span> while a plan runs, else <span class="mono">TRENDING</span>.</td></tr>
+    <tr><td class="g">Mode</td><td>Which detection engine and baseline smoothing is active.</td></tr>
+    <tr><td class="g">Range % / Threshold</td><td>The current measured range vs. what would count as tight. <strong>If you never see zones, compare these two.</strong></td></tr>
+    <tr><td class="g">Resistance / Support</td><td>The live coil's traded boundary levels.</td></tr>
+    <tr><td class="g">Strength</td><td>Touch counts against the current levels (R×n S×m).</td></tr>
+    <tr><td class="g">Confirm</td><td>Confirmation progress, e.g. <span class="mono">1 / 2</span> closes.</td></tr>
+    <tr><td class="g">Plan → Plan State</td><td>Direction, entry, stop, targets (T1 gets a ✓ when tagged) and the plan's narrative state: active, T1 hit, failing, stopped, completed, superseded.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="secno">§9</span>Settings reference</h2>
+<p>Every input, in the order they appear. Defaults in the second column.</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Input</th><th>Default</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr class="grouphead"><td colspan="3">ℹ️ About This Script</td></tr>
+    <tr><td class="g">5 info fields</td><td class="def">—</td><td>Read-only dropdowns; hover each ⓘ for the built-in Overview / How It Works / Reading The Chart / Settings Guide / Notes text. They change nothing.</td></tr>
+    <tr class="grouphead"><td colspan="3">Detection</td></tr>
+    <tr><td class="g">Detection Mode</td><td class="def">Adaptive</td><td>Adaptive = range vs its own typical range (auto-scales across symbols/timeframes). Fixed = absolute % of price.</td></tr>
+    <tr><td class="g">Consolidation Lookback Period</td><td class="def">20</td><td>Window (bars) used to measure the high-to-low range, always evaluated on the prior bar.</td></tr>
+    <tr><td class="g">Confirmation Closes</td><td class="def">2</td><td>Total closes beyond the broken level required before BREAK fires, including the break bar. More = fewer, later, higher-quality signals.</td></tr>
+    <tr><td class="g">Min Coil Bars Before Breakout</td><td class="def">3</td><td>A coil must last this long before its break can signal — screens out 1–2 bar accidental squeezes.</td></tr>
+    <tr><td class="g">Breakout Grace Bars After Coil</td><td class="def">5</td><td>A break of the frozen boundary can still signal this many bars after the squeeze ends — rescues slow, structurally valid breakouts. 0 = breaks must occur while still consolidating.</td></tr>
+    <tr><td class="g">Breakout Level Basis</td><td class="def">Wicks</td><td>Wicks = edges at extreme highs/lows (a single spike wick can set the level). Closes = edges at extreme candle bodies — wick-immune, earlier entries.</td></tr>
+    <tr class="grouphead"><td colspan="3">Adaptive Mode</td></tr>
+    <tr><td class="g">Compression Factor</td><td class="def">0.6</td><td>Range must be ≤ this fraction of typical to count as a coil. Lower = stricter squeeze.</td></tr>
+    <tr><td class="g">Volatility Baseline Length</td><td class="def">100</td><td>How many bars define "normal" range.</td></tr>
+    <tr><td class="g">Baseline Smoothing</td><td class="def">Median</td><td>Median ignores one-off volatility spikes; SMA is the classic average.</td></tr>
+    <tr class="grouphead"><td colspan="3">Fixed Mode</td></tr>
+    <tr><td class="g">Consolidation Threshold %</td><td class="def">5.0</td><td>Range counts as a coil when ≤ this % of price.</td></tr>
+    <tr class="grouphead"><td colspan="3">Filters</td></tr>
+    <tr><td class="g">ATR Length</td><td class="def">14</td><td>The ATR behind every distance the script measures: breakout buffer, touch/break bands, retest band, ATR stops.</td></tr>
+    <tr><td class="g">Breakout Buffer (ATR multiple)</td><td class="def">0.0</td><td>Requires the close to clear the level by this many ATRs — and confirmation closes are held to the same standard. 0 = off.</td></tr>
+    <tr><td class="g">Require Above-Average Volume</td><td class="def">off</td><td>Breaks must print above the volume MA. Passes automatically on symbols without volume data.</td></tr>
+    <tr><td class="g">Volume MA Length</td><td class="def">20</td><td>Length of that volume average.</td></tr>
+    <tr class="grouphead"><td colspan="3">Trade Plan</td></tr>
+    <tr><td class="g">Draw Trade Plan</td><td class="def">on</td><td>Draws entry/stop/target lines, labels and the BREAK info label.</td></tr>
+    <tr><td class="g">Stop-Loss Placement</td><td class="def">Zone midpoint</td><td>Midpoint (tight), Opposite zone edge (classic), or ATR multiple beyond entry.</td></tr>
+    <tr><td class="g">Stop ATR Multiple</td><td class="def">1.5</td><td>Used only in ATR stop mode.</td></tr>
+    <tr><td class="g">Target 1 / Target 2 (× zone height)</td><td class="def">1.0 / 2.0</td><td>Measured moves projected from entry. Keep T2 ≥ T1 — T2 only pays out after T1 tags.</td></tr>
+    <tr><td class="g">Keep Past Trade-Plan Lines</td><td class="def">off</td><td>Off = each new signal clears the previous plan's lines; labels persist up to the chart's ~250-label limit.</td></tr>
+    <tr class="grouphead"><td colspan="3">Retest &amp; Exits</td></tr>
+    <tr><td class="g">Retest Entry Signal</td><td class="def">on</td><td>Enables the RETEST precision entry.</td></tr>
+    <tr><td class="g">Retest Band (ATR multiple)</td><td class="def">0.5</td><td>How close the pullback must come to the broken level to count.</td></tr>
+    <tr><td class="g">Retest Window (bars)</td><td class="def">20</td><td>Retests are only valid this many bars after the breakout.</td></tr>
+    <tr><td class="g">Failed-Breakout Exit Warning</td><td class="def">on</td><td>Prints FAIL ✕ the moment a close falls back through the broken level.</td></tr>
+    <tr class="grouphead"><td colspan="3">Zones</td></tr>
+    <tr><td class="g">Show Consolidation Zones</td><td class="def">on</td><td>Draws the zone boxes.</td></tr>
+    <tr><td class="g">Max Zones Kept On Chart</td><td class="def">8</td><td>Oldest zones (and their flip lines) are removed beyond this count.</td></tr>
+    <tr><td class="g">Shade S/R Edge Bands</td><td class="def">on</td><td>Shades the wick-to-body bands along the zone edges.</td></tr>
+    <tr><td class="g">Touch / Break Band (ATR multiple)</td><td class="def">0.25</td><td>Band width for counting edge touches and for deciding when an old zone is decisively broken.</td></tr>
+    <tr><td class="g">Extend Unbroken Zones Right</td><td class="def">on</td><td>Zones that ended without a breakout stay live S/R until decisively broken.</td></tr>
+    <tr class="grouphead"><td colspan="3">Display &amp; Table Colors</td></tr>
+    <tr><td class="g">Zone / band fills, table position</td><td class="def">—</td><td>Zone fill, resistance/support band fills, and the info table's position (9 spots).</td></tr>
+    <tr><td class="g">Table colors</td><td class="def">—</td><td>Background, label column, and every value cell (status states, mode, range, threshold, levels, confirm, plan rows) individually configurable.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="secno">§10</span>Alerts</h2>
+<p>Two complementary systems:</p>
+<ul>
+  <li><strong>Alert conditions</strong> (pick one when creating an alert): Bullish/Bearish Breakout · Entering Consolidation · Raw Break Up/Down (unconfirmed) · Bullish/Bearish Retest Entry · Failed Breakout · Stop Hit · Target 1 Hit · Target 2 Hit.</li>
+  <li><strong>Dynamic alerts:</strong> create one alert on the indicator with <em>"Any alert() function call"</em> and every event arrives with live numbers in the message — e.g. <span class="mono">BREAK ▲ HBM 15 | Entry 26.81 | Stop 26.57 | T1 27.27 | T2 27.74</span>.</li>
+</ul>
+<p>All alerts fire on closed bars only.</p>
+
+<h2><span class="secno">§11</span>Repainting, warm-up &amp; honest limitations</h2>
+<ul>
+  <li><strong>Non-repainting by construction.</strong> All state changes are gated on confirmed bars: signals, zones and alerts appear only when a bar closes, and confirmed history never redraws. The current unclosed bar can still change — that's the market, not the script.</li>
+  <li><strong>Warm-up.</strong> Adaptive mode needs Lookback + Baseline bars of history before it starts flagging.</li>
+  <li><strong>Spike highs are structural.</strong> A prior spike stays in the window and can become the resistance the next break must clear. That's deliberate — the touch counts tell you how meaningful the edge is.</li>
+  <li><strong>False breakouts exist.</strong> Min Coil Bars, confirmation closes, the ATR buffer and the volume filter reduce them — nothing eliminates them. In relentless chop, demand more confirmation.</li>
+  <li><strong>Educational tool — not financial advice.</strong></li>
+</ul>
+
+<div class="note">
+  <p><strong>Quick triage — "no zones showing?"</strong> Open the info table and compare <span class="mono">Range&nbsp;%</span> to <span class="mono">Threshold</span>. Fixed mode: raise the threshold. Adaptive mode: raise the Compression Factor. Also check that the symbol has enough history for warm-up.</p>
+</div>
+
+<p class="kicker" style="margin-top:56px">MP_Consolidation_Breakout_V7 · one signal per coil · confirms on close · never repaints confirmed history</p>
+</div>
