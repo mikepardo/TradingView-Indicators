@@ -1,0 +1,310 @@
+//@version=6
+// =============================================================================
+// Consolidation & Breakout Long Strategy v1
+//
+// Long-only strategy built on the Consolidation & Breakout Detector v7 engine.
+// Detection, freezing, confirmation and plan geometry are IDENTICAL to the
+// indicator; this script adds order execution:
+//   Entry  — market fill at the close of the confirmed BREAK bar (default),
+//            or at the close of the RETEST bar (precision mode).
+//   Sizing — risk-based: risk a fixed % of equity between entry and stop
+//            (default 1%), or a plain % of equity.
+//   Exits  — T1 takes a partial (default 50%) at +1.0x zone height,
+//            T2 closes the rest at +2.0x, stop is closed when a bar CLOSES
+//            through it (matching the indicator; intrabar stop optional),
+//            stop moves to break-even after T1 (optional, default on),
+//            optional FAIL exit the moment a close falls back through the
+//            broken level.
+// Down-breaks are still tracked (they consume a coil's one signal exactly as
+// in the indicator) but never open a position.
+// =============================================================================
+strategy("Consolidation & Breakout Long Strategy v1", overlay = true, initial_capital = 100000, pyramiding = 0, process_orders_on_close = true, commission_type = strategy.commission.percent, commission_value = 0.0, calc_on_every_tick = false, max_lines_count = 100, max_labels_count = 100)
+
+// ============================== ABOUT THIS SCRIPT ==============================
+aboutOverview = input.string("Long-only breakout entries with managed exits", "📖  Overview", options = ["Long-only breakout entries with managed exits"], group = "ℹ️ About This Script", display = display.none, tooltip = "CONSOLIDATION & BREAKOUT LONG STRATEGY v1\n\nTrades the long side of the Consolidation & Breakout Detector v7:\n• Detects coils with the same adaptive/fixed engine, freezes the zone at the raw break, and requires the same confirmation closes.\n• Enters long at the close of the confirmed BREAK bar (or the RETEST bar in precision mode).\n• Sizes the position off the entry-to-stop distance (risk % of equity).\n• Manages the trade: T1 partial, T2 completion, close-through stop, optional break-even after T1, optional FAIL exit.\n\nShort signals are tracked (so signal timing matches the indicator exactly) but never traded.")
+aboutRules    = input.string("Entry at confirm close · T1/T2 · stop on close", "⚖️  Trade Rules", options = ["Entry at confirm close · T1/T2 · stop on close"], group = "ℹ️ About This Script", display = display.none, tooltip = "ENTRY\n• Breakout mode: market entry at the close of the bar that completes the confirmation count.\n• Retest mode: entry only if price pulls back to within the Retest Band of the broken level and closes back above it, inside the Retest Window.\n\nEXITS (in force from the bar after entry)\n• T1 — limit at entry level + Target1 x zone height; takes the T1 Partial % of the position.\n• T2 — limit at entry level + Target2 x zone height; closes the remainder.\n• STOP — default: position closed when a bar CLOSES through the stop (wicks through it do not stop the trade, matching the indicator). Optional intrabar stop order instead.\n• Break-even — after T1 fills, the stop rises to the entry fill price (optional).\n• FAIL exit — optional: exit as soon as a close falls back below the broken level.\n\nSIZING\n• Risk-based: qty = (equity x Risk %) / (entry - stop). Or plain % of equity.")
+aboutNotes    = input.string("Backtest honestly · fills at close · not advice", "⚠️  Notes", options = ["Backtest honestly · fills at close · not advice"], group = "ℹ️ About This Script", display = display.none, tooltip = "NOTES\n• process_orders_on_close = true: the entry fills at the signal bar's close, exactly when the indicator prints BREAK. No lookahead anywhere: detection uses the prior-bar window and everything acts on closed bars.\n• Fills at the close are idealized (no slippage; set commission/slippage in Properties to taste).\n• The entry fill is the confirmation close, which is beyond the broken level — the plan's stop/targets are still measured from the LEVEL, as the indicator draws them, so realized R per trade is slightly worse than the drawn plan. That is honest, not a bug.\n• Educational tool only — not financial advice.")
+
+// ============================== DETECTION (identical to Detector v7) ==============================
+detectionMode = input.string("Adaptive (volatility-relative)", "Detection Mode", options = ["Adaptive (volatility-relative)", "Fixed (% of price)"], group = "Detection")
+lookbackPeriod = input.int(20, "Consolidation Lookback Period", minval = 5, maxval = 100, group = "Detection")
+breakoutConfirmation = input.int(2, "Confirmation Closes", minval = 1, maxval = 5, group = "Detection")
+minCoilBars = input.int(3, "Min Coil Bars Before Breakout", minval = 1, maxval = 20, group = "Detection")
+graceBars = input.int(5, "Breakout Grace Bars After Coil", minval = 0, maxval = 20, group = "Detection")
+levelBasis = input.string("Wicks (conservative)", "Breakout Level Basis", options = ["Wicks (conservative)", "Closes (aggressive)"], group = "Detection")
+
+compressionFactor = input.float(0.6, "Compression Factor (adaptive)", minval = 0.1, maxval = 1.0, step = 0.05, group = "Adaptive Mode")
+volBaselineLength = input.int(100, "Volatility Baseline Length (adaptive)", minval = 20, maxval = 500, group = "Adaptive Mode")
+baselineMethod = input.string("Median (robust)", "Baseline Smoothing (adaptive)", options = ["Median (robust)", "SMA (original)"], group = "Adaptive Mode")
+consolidationThreshold = input.float(5.0, "Consolidation Threshold % (fixed)", minval = 0.5, maxval = 20, step = 0.5, group = "Fixed Mode")
+
+atrLength     = input.int(14, "ATR Length", minval = 1, maxval = 200, group = "Filters")
+atrBufferMult = input.float(0.0, "Breakout Buffer (ATR multiple)", minval = 0.0, maxval = 3.0, step = 0.1, group = "Filters")
+useVolFilter  = input.bool(false, "Require Above-Average Volume On Breakout", group = "Filters")
+volMaLength   = input.int(20, "Volume MA Length", minval = 1, group = "Filters")
+
+// ============================== STRATEGY INPUTS ==============================
+entryMode = input.string("Breakout (confirmation close)", "Entry Mode", options = ["Breakout (confirmation close)", "Retest (pullback hold close)"], group = "Strategy", tooltip = "Breakout = enter the moment the break is confirmed. Retest = wait for the pullback to the broken level to hold — better price, but some breakouts never retest and are missed.")
+sizingMode = input.string("Risk % of equity (stop-based)", "Position Sizing", options = ["Risk % of equity (stop-based)", "Percent of equity"], group = "Strategy")
+riskPct    = input.float(1.0, "Risk Per Trade (%)", minval = 0.1, maxval = 10.0, step = 0.1, group = "Strategy", tooltip = "Risk-based sizing only: the % of current equity lost if the trade goes straight from the entry fill to the stop.")
+equityPct  = input.float(10.0, "Equity Per Trade (%)", minval = 1.0, maxval = 100.0, step = 1.0, group = "Strategy", tooltip = "Percent-of-equity sizing only.")
+
+stopModeInput = input.string("Zone midpoint", "Stop-Loss Placement", options = ["Zone midpoint", "Opposite zone edge", "ATR multiple"], group = "Strategy")
+stopAtrMult   = input.float(1.5, "Stop ATR Multiple (ATR mode)", minval = 0.1, maxval = 10.0, step = 0.1, group = "Strategy")
+stopStyle     = input.string("Close through (like indicator)", "Stop Execution", options = ["Close through (like indicator)", "Intrabar stop order"], group = "Strategy", tooltip = "Close through = the stop only triggers when a bar CLOSES beyond it, exactly like the indicator's plan tracking (wicks through the stop don't kill the trade). Intrabar = a real stop order at the level.")
+target1Mult   = input.float(1.0, "Target 1 (× zone height)", minval = 0.25, maxval = 10.0, step = 0.25, group = "Strategy")
+target2Mult   = input.float(2.0, "Target 2 (× zone height)", minval = 0.5, maxval = 20.0, step = 0.25, group = "Strategy")
+t1PartialPct  = input.float(50.0, "T1 Partial Exit (%)", minval = 0.0, maxval = 100.0, step = 5.0, group = "Strategy", tooltip = "Share of the position closed at Target 1. 0 = run the whole position to T2/stop. 100 = the whole trade exits at T1.")
+beAfterT1     = input.bool(true, "Move Stop To Entry After T1", group = "Strategy")
+useFailExit   = input.bool(false, "Exit On Failed Breakout (close back through level)", group = "Strategy", tooltip = "Off (default): the trade is managed purely by stop and targets, as the drawn plan. On: exit the moment a close falls back below the broken level — smaller losses, but shaken out of some winners.")
+
+retestBandAtr = input.float(0.5, "Retest Band (ATR multiple)", minval = 0.1, maxval = 2.0, step = 0.05, group = "Retest Mode")
+retestWindow  = input.int(20, "Retest Window (bars)", minval = 1, maxval = 100, group = "Retest Mode")
+
+startDate = input.time(timestamp("1 Jan 2016"), "Backtest Start", group = "Strategy")
+
+// ============================== RANGE (PRIOR-BAR WINDOW) ==============================
+max_bars_back(high, 500)
+max_bars_back(low, 500)
+
+hhRaw = ta.highest(high, lookbackPeriod)
+llRaw = ta.lowest(low,  lookbackPeriod)
+rangeHigh = hhRaw[1]
+rangeLow  = llRaw[1]
+bodyHiRaw = ta.highest(math.max(open, close), lookbackPeriod)
+bodyLoRaw = ta.lowest(math.min(open, close),  lookbackPeriod)
+bodyHigh  = bodyHiRaw[1]
+bodyLow   = bodyLoRaw[1]
+useCloseBasis = levelBasis == "Closes (aggressive)"
+
+avgPrice     = (rangeHigh + rangeLow) / 2
+rangePercent = not na(avgPrice) and avgPrice != 0 ? (rangeHigh - rangeLow) / avgPrice * 100 : na
+
+// ============================== CONSOLIDATION TEST ==============================
+useAdaptive = detectionMode == "Adaptive (volatility-relative)"
+baselineSma = ta.sma(rangePercent, volBaselineLength)
+baselineMed = ta.percentile_nearest_rank(rangePercent, volBaselineLength, 50)
+baselineRange = baselineMethod == "Median (robust)" ? baselineMed : baselineSma
+rawThreshold  = useAdaptive ? baselineRange * compressionFactor : consolidationThreshold
+
+var float lockedThreshold = na
+var bool  inCoil = false
+effectiveThreshold = inCoil and not na(lockedThreshold) ? lockedThreshold : rawThreshold
+isConsolidating = not na(rangePercent) and not na(effectiveThreshold) and rangePercent <= effectiveThreshold
+if isConsolidating and not inCoil
+    lockedThreshold := rawThreshold
+if not isConsolidating
+    lockedThreshold := na
+inCoil := isConsolidating
+newConsolidation = isConsolidating and not isConsolidating[1]
+
+var int coilAge = 0
+coilAge := isConsolidating ? (newConsolidation ? 1 : coilAge + 1) : 0
+var int endedCoilAge = 0
+if not isConsolidating and isConsolidating[1]
+    endedCoilAge := coilAge[1]
+
+// ============================== FILTERS ==============================
+atrVal = ta.atr(atrLength)
+buffer = atrBufferMult * atrVal
+volMa  = ta.sma(volume, volMaLength)
+volOk  = not useVolFilter or na(volume) or (not na(volMa) and volume > volMa)
+
+// ============================== CONFIRMATION STATE MACHINE (identical) ==============================
+var int   dir         = 0
+var int   confirmCnt  = 0
+var float brokenLevel = na
+var bool  armed       = false
+var float coilHigh    = na
+var float coilLow     = na
+var float coilBodyHigh = na
+var float coilBodyLow  = na
+var int   coilStartBar = na
+var int   coilEndBar   = na
+var float pendTopLvl  = na
+var float pendBotLvl  = na
+var int   pendBreakBar = na
+int confirmFailDir = 0
+
+if barstate.isconfirmed
+    if newConsolidation
+        armed := true
+        coilHigh := rangeHigh
+        coilLow  := rangeLow
+        coilBodyHigh := bodyHigh
+        coilBodyLow  := bodyLow
+        coilStartBar := bar_index
+        coilEndBar := na
+        dir := 0
+        confirmCnt := 0
+        brokenLevel := na
+    else if isConsolidating
+        coilHigh := math.max(coilHigh, rangeHigh)
+        coilLow  := math.min(coilLow, rangeLow)
+        coilBodyHigh := math.max(coilBodyHigh, bodyHigh)
+        coilBodyLow  := math.min(coilBodyLow, bodyLow)
+    if not isConsolidating and isConsolidating[1]
+        coilEndBar := bar_index - 1
+
+    float coilTopLvl = useCloseBasis ? coilBodyHigh : coilHigh
+    float coilBotLvl = useCloseBasis ? coilBodyLow  : coilLow
+
+    bool inBreakWindow = isConsolidating or (not na(coilEndBar) and bar_index - coilEndBar <= graceBars)
+    bool coilAgeOk     = isConsolidating ? coilAge >= minCoilBars : endedCoilAge >= minCoilBars
+    bool rawBreakUp    = inBreakWindow and coilAgeOk and not na(coilTopLvl) and close > coilTopLvl + buffer and volOk
+    bool rawBreakDown  = inBreakWindow and coilAgeOk and not na(coilBotLvl) and close < coilBotLvl - buffer and volOk
+
+    if dir == 1
+        if close > brokenLevel + buffer
+            confirmCnt += 1
+        else if close <= brokenLevel
+            confirmFailDir := 1
+            dir := 0
+            confirmCnt := 0
+            brokenLevel := na
+    else if dir == -1
+        if close < brokenLevel - buffer
+            confirmCnt += 1
+        else if close >= brokenLevel
+            confirmFailDir := -1
+            dir := 0
+            confirmCnt := 0
+            brokenLevel := na
+
+    if dir == 0
+        if armed and rawBreakUp and confirmFailDir != 1
+            dir          := 1
+            brokenLevel  := coilTopLvl
+            confirmCnt   := 1
+            pendTopLvl   := coilTopLvl
+            pendBotLvl   := coilBotLvl
+            pendBreakBar := bar_index
+        else if armed and rawBreakDown and confirmFailDir != -1
+            dir          := -1
+            brokenLevel  := coilBotLvl
+            confirmCnt   := 1
+            pendTopLvl   := coilTopLvl
+            pendBotLvl   := coilBotLvl
+            pendBreakBar := bar_index
+
+confirmedBreakoutUp   = dir == 1  and confirmCnt == breakoutConfirmation and barstate.isconfirmed
+confirmedBreakoutDown = dir == -1 and confirmCnt == breakoutConfirmation and barstate.isconfirmed
+
+// ============================== PLAN / FLIP STATE ==============================
+var float planEntryLvl = na   // the broken level (plan geometry anchor)
+var float planStop     = na   // current stop (can rise to break-even)
+var float planT1       = na
+var float planT2       = na
+var int   planBar      = na
+var bool  t1Done       = false
+
+var int   flipDir    = 0
+var float flipLevel  = na
+var int   flipBar    = na
+var bool  retestDone = false
+
+bool inWindow = time >= startDate
+bool wantRetestEntry = entryMode == "Retest (pullback hold close)"
+
+// ============================== SIGNAL: CONFIRMED BREAKOUT ==============================
+if (confirmedBreakoutUp or confirmedBreakoutDown) and barstate.isconfirmed
+    bool up = confirmedBreakoutUp
+    float level = up ? pendTopLvl : pendBotLvl
+    flipDir    := up ? 1 : -1
+    flipLevel  := level
+    flipBar    := bar_index
+    retestDone := false
+
+    // A new plan is only adopted while FLAT: an open trade keeps the stop and
+    // targets it was entered with — a later signal must not move them.
+    if up and strategy.position_size == 0
+        float zoneH = pendTopLvl - pendBotLvl
+        planEntryLvl := level
+        planStop     := stopModeInput == "Zone midpoint" ? (pendTopLvl + pendBotLvl) / 2 : stopModeInput == "Opposite zone edge" ? pendBotLvl : level - stopAtrMult * atrVal
+        planT1       := level + target1Mult * zoneH
+        planT2       := level + target2Mult * zoneH
+        planBar      := bar_index
+        t1Done       := false
+
+        if not wantRetestEntry and inWindow and planStop < close
+            float qty = sizingMode == "Risk % of equity (stop-based)" ? (strategy.equity * riskPct / 100) / (close - planStop) : (strategy.equity * equityPct / 100) / close
+            if qty > 0
+                strategy.entry("L", strategy.long, qty = qty, comment = "BREAK ▲")
+                // exits issued with the entry so the targets are live from the
+                // very next bar (they are re-issued every bar while in position)
+                if t1PartialPct > 0
+                    strategy.exit("T1", from_entry = "L", qty_percent = t1PartialPct, limit = planT1, stop = stopStyle == "Close through (like indicator)" ? na : planStop, comment_profit = "T1 ◆", comment_loss = "STOP ✕")
+                if t1PartialPct < 100
+                    strategy.exit("T2", from_entry = "L", qty_percent = 100, limit = planT2, stop = stopStyle == "Close through (like indicator)" ? na : planStop, comment_profit = "T2 ◆", comment_loss = "STOP ✕")
+
+    // one signal per consolidation — identical to the indicator (both directions consume it)
+    dir := 0
+    confirmCnt := 0
+    brokenLevel := na
+    armed := false
+else if barstate.isconfirmed
+    // ---- retest tracking (long side only matters here)
+    if flipDir == 1 and bar_index > flipBar
+        float band = retestBandAtr * atrVal
+        if not retestDone and bar_index - flipBar <= retestWindow and low <= flipLevel + band and close > flipLevel
+            retestDone := true
+            if wantRetestEntry and inWindow and strategy.position_size == 0 and not na(planStop) and planStop < close and bar_index - planBar <= retestWindow
+                float qty = sizingMode == "Risk % of equity (stop-based)" ? (strategy.equity * riskPct / 100) / (close - planStop) : (strategy.equity * equityPct / 100) / close
+                if qty > 0
+                    strategy.entry("L", strategy.long, qty = qty, comment = "RETEST ▲")
+                    planBar := bar_index
+                    t1Done  := false
+                    if t1PartialPct > 0
+                        strategy.exit("T1", from_entry = "L", qty_percent = t1PartialPct, limit = planT1, stop = stopStyle == "Close through (like indicator)" ? na : planStop, comment_profit = "T1 ◆", comment_loss = "STOP ✕")
+                    if t1PartialPct < 100
+                        strategy.exit("T2", from_entry = "L", qty_percent = 100, limit = planT2, stop = stopStyle == "Close through (like indicator)" ? na : planStop, comment_profit = "T2 ◆", comment_loss = "STOP ✕")
+        if close < flipLevel
+            flipDir := 0
+            // identical to the indicator: the coil is still intact, so the
+            // next break of it may signal again
+            if isConsolidating
+                armed := true
+    if flipDir == -1 and bar_index > flipBar and close > flipLevel
+        flipDir := 0
+        if isConsolidating
+            armed := true
+
+    if newConsolidation
+        flipDir := 0
+
+// ============================== POSITION MANAGEMENT ==============================
+// Runs on closed bars only; exits are live from the bar after the entry fill.
+bool inPos = strategy.position_size > 0
+bool closeThroughStop = stopStyle == "Close through (like indicator)"
+
+if barstate.isconfirmed and inPos and bar_index > planBar
+    // T1 touch detection (for break-even) — the actual partial is a limit order below
+    if not t1Done and high >= planT1
+        t1Done := true
+        if beAfterT1
+            planStop := math.max(planStop, strategy.position_avg_price)
+    // optional FAIL exit: premise dead the moment a close is back through the level
+    if useFailExit and close < planEntryLvl
+        strategy.close_all(comment = "FAIL ✕")
+    // close-through stop: only a CLOSE beyond the stop ends the trade
+    else if closeThroughStop and close < planStop
+        strategy.close_all(comment = "STOP ✕")
+
+// standing limit (and optionally stop) orders — re-issued every bar so a raised
+// break-even stop takes effect
+if inPos
+    if t1PartialPct > 0
+        strategy.exit("T1", from_entry = "L", qty_percent = t1PartialPct, limit = planT1, stop = closeThroughStop ? na : planStop, comment_profit = "T1 ◆", comment_loss = "STOP ✕")
+    if t1PartialPct < 100
+        strategy.exit("T2", from_entry = "L", qty_percent = 100, limit = planT2, stop = closeThroughStop ? na : planStop, comment_profit = "T2 ◆", comment_loss = "STOP ✕")
+
+// ============================== VISUALS ==============================
+bool  coilLive    = (isConsolidating and armed) or dir != 0
+float displayHigh = dir != 0 ? pendTopLvl : (useCloseBasis ? coilBodyHigh : coilHigh)
+float displayLow  = dir != 0 ? pendBotLvl : (useCloseBasis ? coilBodyLow  : coilLow)
+plot(coilLive ? displayHigh : na, "Resistance", color = color.red,   style = plot.style_linebr, linewidth = 2)
+plot(coilLive ? displayLow  : na, "Support",    color = color.green, style = plot.style_linebr, linewidth = 2)
+plot(inPos ? planStop : na, "Stop",     color = color.new(color.red, 0),  style = plot.style_linebr, linewidth = 1)
+plot(inPos ? planT1   : na, "Target 1", color = color.new(color.teal, 0), style = plot.style_linebr, linewidth = 1)
+plot(inPos ? planT2   : na, "Target 2", color = color.new(color.teal, 0), style = plot.style_linebr, linewidth = 1)
+bgcolor(isConsolidating ? color.new(color.yellow, 90) : dir != 0 ? color.new(color.orange, 92) : na, title = "Coil / Break-Tracking Background")
