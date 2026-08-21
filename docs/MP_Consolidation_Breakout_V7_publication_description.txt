@@ -4,9 +4,12 @@ Paste everything below the line into the description box of TradingView's
 "Publish script" dialog. This description becomes the page that opens from
 the indicator's "About this script..." menu item.
 
-At each [ INSERT IMAGE: ... ] marker, insert the matching PNG from docs/img/
-(drag & drop or the editor's image control — PNG, under 2 MB, max 2000x2000,
-all five files comply). Delete the marker line after inserting.
+Images embed via TradingView chart snapshots: set up the chart described at
+each [ INSERT SNAPSHOT ] marker, press the camera icon -> "Copy link to the
+chart image", and paste that tradingview.com/x/... link on its own line at the
+marker (delete the marker line). Prep for every shot: dark theme, other
+indicators hidden, ~150-250 bars visible. Use Bar Replay to capture the
+"live" states (yellow coil background, dashed forming box, table status).
 
 ---------------------------------------------------------------------------
 
@@ -16,7 +19,7 @@ Finds periods where price coils into a tight range, flags confirmed breakouts, a
 
 Every setup moves through the same pipeline. A consolidation ("coil") must live at least Min Coil Bars before its break can count. The first close beyond the boundary is the raw break (small circle) — the zone FREEZES at that instant, so breakout candles can't inflate the very level they are breaking. The break must then hold for N total closes (Confirmation Closes, break bar included) before BREAK prints. A failed attempt marks a grey ✕ and the machine resets — it will not re-enter the same direction that just failed. One signal per coil; it re-arms when a fresh coil forms. A grace window lets a slow break still signal for a few bars after the squeeze ends.
 
-[ INSERT IMAGE: fig1-signal-lifecycle.png ]
+[ INSERT SNAPSHOT: Bar Replay mid-coil — yellow background, dashed forming box, red/green S/R lines, table reading CONSOLIDATING with Range % under Threshold ]
 
 Key mechanics behind the pipeline:
 • Prior-bar window — the range is measured over the window ending at the PREVIOUS bar, so a breakout candle can't distort its own level.
@@ -27,7 +30,7 @@ Key mechanics behind the pipeline:
 
 Zones are boxes with shaded BANDS along their edges, because S/R is an area, not a line. The box outlines the full wick range; each band spans wick-extreme to body-extreme. R×n S×m on the box counts how many bars touched each edge — zone strength. After a confirmed break, the broken level extends forward as a thick flip line: broken resistance acts as new support (and vice versa). If price closes back through it, the line greys out and FAIL ✕ prints.
 
-[ INSERT IMAGE: fig2-zone-anatomy.png ]
+[ INSERT SNAPSHOT: close-up of a frozen zone — box border, shaded R/S bands, RxN SxM text; ideally a grey unbroken zone extending right beside a green "broke up" zone ]
 
 Zone states: dashed blue border = still forming (edges can expand) · solid green/red border = frozen, broke up/down · solid grey border = coil ended without a break — the zone stays live S/R, keeps extending right, and is stamped "broke up/down" only when a close clears an edge decisively (by the touch/break band).
 
@@ -35,13 +38,13 @@ Zone states: dashed blue border = still forming (edges can expand) · solid gree
 
 Fixed mode calls the market consolidated when the window's high-to-low range is below a set % of price. Adaptive mode (recommended) compares the range to the symbol's OWN typical range — the median (robust to one-off volatility spikes) or SMA of the last Baseline Length readings — times the Compression Factor, so it auto-scales across symbols and timeframes. The adaptive threshold LOCKS at coil onset: without the lock, the coil's own tight readings would drag the baseline down and a long coil would flicker off/on, re-arming duplicate signals.
 
-[ INSERT IMAGE: fig3-detection-modes.png ]
+[ INSERT SNAPSHOT: two-pane layout, same symbol/timeframe — left pane Detection Mode = Fixed, right pane = Adaptive, both info tables visible showing the differing Threshold rows ]
 
 ■ THE TRADE PLAN
 
 On every confirmed BREAK, all levels are computed from the frozen zone and never move afterward. Entry = the broken level. Targets are measured moves — the zone height projected from entry (1.0× and 2.0× by default; keep T2 ≥ T1). Stops come in three flavors: zone midpoint (tight, default), opposite zone edge (classic), or an ATR multiple beyond entry.
 
-[ INSERT IMAGE: fig4-trade-plan.png ]
+[ INSERT SNAPSHOT: close-up of one BREAK signal — E/S/T1/T2 label, red dashed stop line, teal dotted targets, thick flip line; Keep Past Trade-Plan Lines off ]
 
 How the plan resolves:
 • STOP ✕ — a bar CLOSES through the stop (a wick through it doesn't count; a bar that wicks a target but closes through the stop counts as stopped).
@@ -56,7 +59,7 @@ Chasing a confirmation close pays the worst price of the move. After a BREAK, if
 
 ■ READING THE CHART
 
-[ INSERT IMAGE: fig5-signal-legend.png ]
+[ INSERT SNAPSHOT: wide frame telling the full story — BREAK label, RETEST at the flip line, T1/T2 diamonds (raise Retest Window to 30 if retests are scarce) ]
 
 Backgrounds: yellow = coiling now · orange = a break is being confirmed. The red/green step-lines are the live coil's traded boundaries (frozen while a break confirms). The info table shows Status, Mode, Range % vs Threshold, live levels, zone Strength, confirmation progress, and the full plan with its narrative state.
 
