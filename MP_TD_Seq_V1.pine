@@ -4,6 +4,63 @@
 // Sequential. Not affiliated with or endorsed by DeMARK Analytics.
 // Spec: MP_TD_Seq_V1 Build Specification v1.0 (Mike Phillips, AI-assisted).
 // All comments referencing "§N.N" point to sections of that spec.
+//
+// Revision 1.1 — accuracy review pass:
+//   • Fixed Countdown double-increment on its initiation bar (counts started at 2).
+//   • TDST cancellation now watches the SAME side's TDST line (was crossed).
+//   • Countdown state resets when the next same-direction Setup completes, so
+//     the state machine cycles instead of freezing after the first 13.
+//   • Cancellations now stick: a canceled/negated Setup no longer silently
+//     re-launches a Countdown; only a fresh Setup 9 re-arms the phase.
+//   • TDST level state decoupled from the "Show TDST lines" display toggle.
+//   • Perfection: plain lows/highs, inclusive comparison, evaluated only for
+//     completed Setups (bar 8 tested retrospectively on the completion bar),
+//     and the deferral window closes when an opposing Setup completes.
+//   • Risk-level extreme now tracked on EVERY bar of the Countdown phase.
+//   • Count labels print only on bars that actually earned a count.
+//   • 22-bar extension requires uninterrupted continuation (latched once broken).
+//   • Qualifier bar clamped to the countdown length; recorded when it is bar 1.
+//   • Recycle window is float 100–161.8% (canonical) with normalized bounds.
+//   • Countdown-cancellation alerts added; dead inputs/variables removed;
+//     "Shade Risk Zone" implemented; 12-bar box independent of Risk Level.
+//
+// ============================================================================
+// ABOUT THIS SCRIPT — copy the text below into TradingView's description box
+// when publishing; it becomes the "About this script" section shown in the
+// indicator's page and drop-down. (Pine has no code-level publish description;
+// the ℹ️ About group in Settings mirrors this in-app.)
+// ============================================================================
+// MP TD Sequential V1 — an independent, open implementation of Tom DeMark's
+// Sequential (Standard variant).
+//
+// WHAT IT DOES
+// • Setup: a Bearish/Bullish Price Flip starts a 9-bar count of closes beyond
+//   the close 4 bars earlier. Completion prints "9" and sets the TDST level.
+// • Perfection: forward-looking check of bar 8/9 (or any later bar while the
+//   Setup remains the most recent) against the lows/highs of bars 6 and 7 —
+//   marked with a dot.
+// • TDST: support/resistance from the completed Setup — bar-1 true high/low
+//   (canonical) or the full Setup extreme, selectable.
+// • Countdown: non-consecutive 13-count (close vs. low/high 2 bars earlier),
+//   armed by a completed Setup. Bar 13 must satisfy the 13-vs-8 qualifier or
+//   a "+" prints and the count defers until a bar qualifies.
+// • Cancellations: TDST violation, opposing Setup completion, Setup recycle
+//   (size ratio, default 100–161.8%), and 22-bar Setup extension.
+// • On a qualified 13: Risk Level, optional risk-zone shading, and the 12-bar
+//   reversal window box.
+// • Full alert set, diagnostic table, and hidden data-window series for
+//   downstream strategies and screeners.
+//
+// SETTINGS
+// All canonical values (9 / 4 / 13 / 2 / 8) are inputs. Display toggles only
+// affect drawing — never the underlying signal logic.
+//
+// NOTES
+// "TD Sequential", "TDST", and "Risk Level" are trademarks of DeMARK
+// Analytics, LLC. This is an independent implementation of publicly available
+// documentation; not affiliated with or endorsed by DeMARK Analytics.
+// For education and research only — not financial advice.
+// ============================================================================
 
 //@version=6
 indicator("MP TD Sequential V1", shorttitle="MP_TD_Seq_V1",
@@ -16,34 +73,54 @@ indicator("MP TD Sequential V1", shorttitle="MP_TD_Seq_V1",
 // 1. INPUT GROUPS  (§6)
 // ============================================================================
 
-var string GRP_CALC = "Calculation"
-var string GRP_DISP = "Display"
-var string GRP_COL  = "Color & Style"
+var string GRP_ABOUT = "ℹ️ About"
+var string GRP_CALC  = "Calculation"
+var string GRP_DISP  = "Display"
+var string GRP_COL   = "Color & Style"
+
+// 6.0 About — informational panel shown in the indicator's settings drop-down.
+const string ABOUT_TEXT =
+     "MP TD Sequential V1 (rev 1.1)\n" +
+     "Tom DeMark Sequential — Standard variant.\n\n" +
+     "Setup: Price Flip, then 9 closes beyond the close 4 bars back. " +
+     "Perfection dot: bar 8/9 (or later) vs. bars 6 & 7. " +
+     "TDST from the completed Setup. " +
+     "Countdown: 13 non-consecutive closes vs. low/high 2 bars back, " +
+     "13-vs-8 qualifier ('+' = deferred). " +
+     "Cancels: TDST violation, opposing Setup, recycle, 22-bar extension. " +
+     "Qualified 13: Risk Level + 12-bar reversal window.\n\n" +
+     "Display toggles never change signal logic. " +
+     "Independent implementation — not affiliated with DeMARK Analytics. " +
+     "Education/research only; not financial advice."
+
+input.text_area(ABOUT_TEXT, title="About this script", group=GRP_ABOUT,
+     tooltip="Informational only — editing this text has no effect on the indicator.")
 
 // 6.1 Calculation Settings
-setupLength            = input.int(9,   "Setup length",                 minval=2, group=GRP_CALC, tooltip="Bars required to complete Setup (canonical: 9).")
+setupLength            = input.int(9,   "Setup length",                 minval=4, group=GRP_CALC, tooltip="Bars required to complete Setup (canonical: 9). Minimum 4 — perfection references bars N-3 and N-2.")
 setupLookback          = input.int(4,   "Setup lookback",               minval=1, group=GRP_CALC, tooltip="Bars back for Setup close comparison (canonical: 4).")
 countdownLength        = input.int(13,  "Countdown length",             minval=2, group=GRP_CALC, tooltip="Bars required to complete Countdown (canonical: 13).")
 countdownLookback      = input.int(2,   "Countdown lookback",           minval=1, group=GRP_CALC, tooltip="Bars back for Countdown low/high comparison (canonical: 2).")
-qualifierBar           = input.int(8,   "Countdown qualifier bar",      minval=1, group=GRP_CALC, tooltip="Countdown bar against which 13 is qualified (canonical: 8).")
+qualifierBar           = input.int(8,   "Countdown qualifier bar",      minval=1, group=GRP_CALC, tooltip="Countdown bar against which the final Countdown bar is qualified (canonical: 8). Values ≥ Countdown length are clamped to length − 1.")
 requirePriceFlip       = input.bool(true,  "Require Price Flip to start Setup", group=GRP_CALC)
 requireQualifier       = input.bool(true,  "Require 13-vs-8 qualifier",         group=GRP_CALC)
 enableTDSTCancel       = input.bool(true,  "Cancel Countdown on TDST violation",group=GRP_CALC)
 enableOpposingSetupCancel = input.bool(true, "Cancel Countdown on opposing Setup", group=GRP_CALC)
 enableRecycle          = input.bool(true,  "Enable Recycle logic",              group=GRP_CALC)
-recycleMinPct          = input.int(100, "Recycle min % of prior Setup size",   minval=1, group=GRP_CALC)
-recycleMaxPct          = input.int(200, "Recycle max % of prior Setup size",   minval=1, group=GRP_CALC)
-enable22BarRecycle     = input.bool(true,  "Enable 22-bar Setup extension recycle", group=GRP_CALC)
+recycleMinPct          = input.float(100.0, "Recycle min % of prior Setup size", minval=1.0, group=GRP_CALC, tooltip="Canonical: 100.")
+recycleMaxPct          = input.float(161.8, "Recycle max % of prior Setup size", minval=1.0, group=GRP_CALC, tooltip="Canonical: 161.8 (exclusive upper bound — larger Setups are a new trend leg, not a recycle).")
+enable22BarRecycle     = input.bool(true,  "Enable 22-bar Setup extension recycle", group=GRP_CALC, tooltip="Recycles the Countdown if the Setup condition holds uninterrupted from Setup bar 9 out to Setup length + Countdown length bars (canonical: 22).")
 tdstBreakRule          = input.string("close", "TDST break rule", options=["close","intrabar"], group=GRP_CALC)
+tdstSource             = input.string("Setup bar 1 (canonical)", "TDST level source", options=["Setup bar 1 (canonical)","Extreme of bars 1-9"], group=GRP_CALC, tooltip="Canonical TDST uses the true high/low of Setup bar 1. The alternative uses the highest true high / lowest true low across the whole Setup.")
 
-// 6.2 Display Settings
+// 6.2 Display Settings — drawing only; these never affect signal logic.
 showSetupCounts        = input.string("Key only (6-9)", "Show Setup counts", options=["All (1-9)","Key only (6-9)","9 only","Off"], group=GRP_DISP)
 showPerfectionMarker   = input.bool(true,  "Show Perfection marker (blue dot)", group=GRP_DISP)
 showCountdownCounts    = input.string("Key only (8, 13)", "Show Countdown counts", options=["All (1-13)","Key only (8, 13)","13 only","Off"], group=GRP_DISP)
 showDisqualified13     = input.bool(true,  "Show disqualified 13 placeholder (+)", group=GRP_DISP)
 showTDSTLines          = input.bool(true,  "Show TDST lines",                    group=GRP_DISP)
 showRiskLevel          = input.bool(true,  "Show Risk Level on Countdown 13",    group=GRP_DISP)
-showRiskZone           = input.bool(false, "Shade Risk Zone",                    group=GRP_DISP)
+showRiskZone           = input.bool(false, "Shade Risk Zone",                    group=GRP_DISP, tooltip="Shades the band between the Countdown extreme and the Risk Level across the 12-bar window.")
 show12BarBox           = input.bool(true,  "Show 12-bar reversal window box",    group=GRP_DISP)
 showDiagnosticTable    = input.bool(false, "Show diagnostic table",              group=GRP_DISP)
 tablePosition          = input.string("Top right", "Diagnostic table position", options=["Top right","Top left","Bottom right","Bottom left"], group=GRP_DISP)
@@ -58,6 +135,9 @@ riskLevelColor         = input.color(color.new(color.orange,0),  "Risk Level col
 disqualifiedColor      = input.color(color.new(color.gray,  0),  "Disqualified marker color", group=GRP_COL)
 setupCountSize         = input.string("tiny",  "Setup count size",  options=["tiny","small","normal"], group=GRP_COL)
 keyCountSize           = input.string("small", "Key count size (9, 13)", options=["tiny","small","normal","large"], group=GRP_COL)
+
+// Effective qualifier bar — must exist before the final Countdown bar.
+effQualifierBar = math.min(qualifierBar, countdownLength - 1)
 
 // Map size strings to Pine constants.
 sizeOf(string s) =>
@@ -84,27 +164,37 @@ posOf(string p) =>
 
 // Setup state — tracked independently for buy & sell directions.
 type SetupState
-    int    count            = 0
-    int    direction        = 0      // +1 for sell setup, -1 for buy setup
-    int    bar1Index        = na
-    bool   complete         = false
-    bool   perfected        = false
-    int    perfectionBar    = na
-    float  highestTrueHigh  = na
-    float  lowestTrueLow    = na
-    float  bar6High         = na
-    float  bar7High         = na
-    float  bar6Low          = na
-    float  bar7Low          = na
-    int    extensionCount   = 0      // bars past 9 where condition still holds (§3.11.1)
-    float  size             = na     // setup range across bars 1-9
-    int    completionBar    = na
+    int    count                = 0
+    int    direction            = 0      // +1 for sell setup, -1 for buy setup
+    int    bar1Index            = na
+    bool   complete             = false
+    bool   perfected            = false
+    bool   perfectionWindowOpen = true   // closed when an opposing Setup completes (§3.5)
+    int    perfectionBar        = na
+    float  highestTrueHigh      = na
+    float  lowestTrueLow        = na
+    float  bar1TrueHigh         = na     // canonical TDST resistance source (§3.6)
+    float  bar1TrueLow          = na     // canonical TDST support source (§3.6)
+    float  refALow              = na     // perfection reference: bar setupLength-3 (canonical bar 6)
+    float  refBLow              = na     // perfection reference: bar setupLength-2 (canonical bar 7)
+    float  refAHigh             = na
+    float  refBHigh             = na
+    int    extensionCount       = 0      // bars past 9 where condition still holds (§3.11.1)
+    bool   extensionBroken      = false  // extension must be uninterrupted; latched once broken
+    float  size                 = na     // setup range across bars 1-9
+    int    completionBar        = na
 
 // Countdown state — tracked independently per direction.
 type CountdownState
     int    count                       = 0
     int    direction                   = 0
     int    setupRefBarIdx              = na
+    bool   armed                       = false  // a completed Setup authorizes initiation (§3.7);
+                                                // cleared by cancellation so a negated Setup
+                                                // cannot silently re-launch the Countdown
+    float  tdstLevelAtArm              = na     // TDST level of the Setup that armed this phase —
+                                                // the §3.10.2 cancel reference, so a smaller
+                                                // non-recycling Setup cannot tighten it mid-count
     bool   active                      = false
     bool   complete                    = false
     bool   qualified                   = false
@@ -117,7 +207,8 @@ type CountdownState
     float  trueRangeAtExtreme          = na
     int    extremeBar                  = na
 
-// TDST line wrapper.
+// TDST line wrapper. Level/active state always maintained; the drawing objects
+// are only created when showTDSTLines is on.
 type TDSTLine
     line   lineObj
     label  lineLabel
@@ -150,13 +241,23 @@ var float lastSellSetupSize = na
 var TDSTLine activeBuyTDST  = TDSTLine.new(na, na, na, na, false, +1)   // resistance from buy setup
 var TDSTLine activeSellTDST = TDSTLine.new(na, na, na, na, false, -1)   // support from sell setup
 
-// Per-direction completion artifacts (Risk level line + 12-bar box).
+// Per-direction completion artifacts (Risk level line + 12-bar box + risk zone).
 var line  buyRiskLine      = na
 var label buyRiskLabel     = na
 var box   buy12BarBox      = na
+var box   buyRiskZoneBox   = na
 var line  sellRiskLine     = na
 var label sellRiskLabel    = na
 var box   sell12BarBox     = na
+var box   sellRiskZoneBox  = na
+
+// Live 12-bar reversal-window trackers — snapshotted on each qualified 13 so
+// the window's risk-violation/expiry checks survive the Countdown cycle reset
+// (a fresh same-direction Setup 9 can complete inside the window).
+var float buyActiveRiskLevel  = na
+var int   buyActiveRisk13Bar  = na
+var float sellActiveRiskLevel = na
+var int   sellActiveRisk13Bar = na
 
 // Diagnostic table.
 var table diagTable        = na
@@ -185,20 +286,22 @@ th0 = trueHigh(0)
 tl0 = trueLow(0)
 tr0 = trueRange(0)
 
-// Visibility helpers — should we render this Setup count?
+// Visibility helpers — should we render this Setup count? Ranges scale with
+// the configured Setup length (canonical option labels assume 9).
 showThisSetupCount(int n) =>
     switch showSetupCounts
-        "All (1-9)"      => n >= 1 and n <= 9
-        "Key only (6-9)" => n >= 6 and n <= 9
-        "9 only"         => n == 9
+        "All (1-9)"      => n >= 1 and n <= setupLength
+        "Key only (6-9)" => n >= math.max(1, setupLength - 3) and n <= setupLength
+        "9 only"         => n == setupLength
         =>                  false
 
-// Visibility helpers — should we render this Countdown count?
+// Visibility helpers — should we render this Countdown count? Key counts are
+// the qualifier bar and the completion bar.
 showThisCountdownCount(int n) =>
     switch showCountdownCounts
-        "All (1-13)"     => n >= 1 and n <= 13
-        "Key only (8, 13)" => n == 8 or n == 13
-        "13 only"        => n == 13
+        "All (1-13)"       => n >= 1 and n <= countdownLength
+        "Key only (8, 13)" => n == effQualifierBar or n == countdownLength
+        "13 only"          => n == countdownLength
         =>                  false
 
 // Truncate a float for compact display.
@@ -212,20 +315,26 @@ clearSetup(SetupState s) =>
     s.count := 0
     s.complete := false
     s.perfected := false
+    s.perfectionWindowOpen := true
     s.bar1Index := na
     s.perfectionBar := na
     s.highestTrueHigh := na
     s.lowestTrueLow := na
-    s.bar6Low := na
-    s.bar7Low := na
-    s.bar6High := na
-    s.bar7High := na
+    s.bar1TrueHigh := na
+    s.bar1TrueLow := na
+    s.refALow := na
+    s.refBLow := na
+    s.refAHigh := na
+    s.refBHigh := na
     s.extensionCount := 0
+    s.extensionBroken := false
     s.size := na
     s.completionBar := na
 
 clearCountdown(CountdownState c) =>
     c.count := 0
+    c.armed := false
+    c.tdstLevelAtArm := na
     c.active := false
     c.complete := false
     c.qualified := false
@@ -259,15 +368,23 @@ sellSetupCond = close > close[setupLookback]    // §3.4
 // ----------------------------------------------------------------------------
 buySetupCompletedThisBar  = false
 sellSetupCompletedThisBar = false
+buySetupCountedThisBar    = false   // a Setup number was earned on this bar
+sellSetupCountedThisBar   = false
+buyCDCanceledThisBar      = false   // an active Countdown was canceled this bar
+sellCDCanceledThisBar     = false
 
 // Three states per direction:
 //   (a) idle       (count == 0)            — looking for a Price Flip
 //   (b) building   (count 1..8)            — counting toward 9
 //   (c) completed  (count == 9, locked)    — TDST drawn, supports Countdown
 //                                            and forward-looking perfection
-// A new Price Flip after completion supersedes the old Setup (§3.5: a new
-// Setup in either direction ends the previous one's perfection check).
-buyStartingNew = bearishFlip or (buySetup.count == 0 and not requirePriceFlip and buySetupCond)
+// A new Price Flip after completion supersedes the old Setup. The Countdown
+// phase is tracked separately (armed/active on CountdownState), so a mere
+// flip that starts a 1-count Setup does not destroy a pending Countdown.
+// Without the flip requirement, a fresh count may also start after a completed
+// Setup once its condition run has broken (count stays locked at 9, so the
+// idle `count == 0` state alone would never recur in that mode).
+buyStartingNew = bearishFlip or (not requirePriceFlip and buySetupCond and (buySetup.count == 0 or (buySetup.complete and not buySetupCond[1])))
 
 if buyStartingNew
     // start fresh — overwrite any prior (idle/building/completed) state
@@ -278,20 +395,18 @@ if buyStartingNew
     buySetup.bar1Index := bar_index
     buySetup.highestTrueHigh := th0
     buySetup.lowestTrueLow := tl0
+    buySetup.bar1TrueHigh := th0
+    buySetup.bar1TrueLow := tl0
     array.push(buySetupBars, bar_index)
+    buySetupCountedThisBar := true
 else if buySetup.count > 0 and not buySetup.complete
     if buySetupCond
         // continue (§3.3)
         buySetup.count := buySetup.count + 1
         array.push(buySetupBars, bar_index)
+        buySetupCountedThisBar := true
         buySetup.highestTrueHigh := math.max(buySetup.highestTrueHigh, th0)
         buySetup.lowestTrueLow  := math.min(buySetup.lowestTrueLow,  tl0)
-        if buySetup.count == 6
-            buySetup.bar6Low  := tl0
-            buySetup.bar6High := th0
-        if buySetup.count == 7
-            buySetup.bar7Low  := tl0
-            buySetup.bar7High := th0
         if buySetup.count == setupLength
             buySetup.complete := true
             buySetup.completionBar := bar_index
@@ -304,10 +419,20 @@ else if buySetup.count > 0 and not buySetup.complete
         array.clear(buySetupBars)
 // when complete: count locked at 9; extension tracking lives in §5.9
 
+// Perfection reference bars — canonical bars 6 & 7 for a 9-bar Setup, i.e.
+// setupLength-3 and setupLength-2. Plain lows/highs per the canonical rule.
+if buySetupCountedThisBar
+    if buySetup.count == setupLength - 3
+        buySetup.refALow  := low
+        buySetup.refAHigh := high
+    if buySetup.count == setupLength - 2
+        buySetup.refBLow  := low
+        buySetup.refBHigh := high
+
 // ----------------------------------------------------------------------------
 // 5.4  SELL SETUP STATE  (§3.4)
 // ----------------------------------------------------------------------------
-sellStartingNew = bullishFlip or (sellSetup.count == 0 and not requirePriceFlip and sellSetupCond)
+sellStartingNew = bullishFlip or (not requirePriceFlip and sellSetupCond and (sellSetup.count == 0 or (sellSetup.complete and not sellSetupCond[1])))
 
 if sellStartingNew
     clearSetup(sellSetup)
@@ -317,19 +442,17 @@ if sellStartingNew
     sellSetup.bar1Index := bar_index
     sellSetup.highestTrueHigh := th0
     sellSetup.lowestTrueLow := tl0
+    sellSetup.bar1TrueHigh := th0
+    sellSetup.bar1TrueLow := tl0
     array.push(sellSetupBars, bar_index)
+    sellSetupCountedThisBar := true
 else if sellSetup.count > 0 and not sellSetup.complete
     if sellSetupCond
         sellSetup.count := sellSetup.count + 1
         array.push(sellSetupBars, bar_index)
+        sellSetupCountedThisBar := true
         sellSetup.highestTrueHigh := math.max(sellSetup.highestTrueHigh, th0)
         sellSetup.lowestTrueLow  := math.min(sellSetup.lowestTrueLow,  tl0)
-        if sellSetup.count == 6
-            sellSetup.bar6High := th0
-            sellSetup.bar6Low  := tl0
-        if sellSetup.count == 7
-            sellSetup.bar7High := th0
-            sellSetup.bar7Low  := tl0
         if sellSetup.count == setupLength
             sellSetup.complete := true
             sellSetup.completionBar := bar_index
@@ -340,50 +463,87 @@ else if sellSetup.count > 0 and not sellSetup.complete
         clearSetup(sellSetup)
         array.clear(sellSetupBars)
 
+if sellSetupCountedThisBar
+    if sellSetup.count == setupLength - 3
+        sellSetup.refALow  := low
+        sellSetup.refAHigh := high
+    if sellSetup.count == setupLength - 2
+        sellSetup.refBLow  := low
+        sellSetup.refBHigh := high
+
 // ----------------------------------------------------------------------------
 // 5.5  SETUP PERFECTION — forward-looking  (§3.5)
 // ----------------------------------------------------------------------------
-// Perfection eligible on bar 8, bar 9, or any later bar while the Setup is
-// still the most recent — i.e., count >= setupLength - 1. With count locked
-// at 9 post-completion, this naturally covers the forward-looking window.
-// If a building Setup is later canceled, clearSetup() resets `perfected`.
-if buySetup.count >= setupLength - 1 and not buySetup.perfected
-    if not na(buySetup.bar6Low) and not na(buySetup.bar7Low)
-        if tl0 < buySetup.bar6Low and tl0 < buySetup.bar7Low
+// Canonical rule: the plain low of Setup bar 8 or 9 (or any later bar while
+// the Setup remains the most recent) must be <= the plain lows of BOTH bars
+// 6 and 7 (inclusive). Perfection is a property of a COMPLETED Setup: on the
+// completion bar, bar 8 is tested retrospectively via low[1]; afterwards the
+// current bar's low is tested while the deferral window remains open. The
+// window closes when an opposing Setup completes.
+if sellSetupCompletedThisBar
+    buySetup.perfectionWindowOpen := false
+if buySetupCompletedThisBar
+    sellSetup.perfectionWindowOpen := false
+
+buyPerfectedThisBar  = false
+sellPerfectedThisBar = false
+
+if buySetup.complete and not buySetup.perfected and buySetup.perfectionWindowOpen
+    if not na(buySetup.refALow) and not na(buySetup.refBLow)
+        if buySetupCompletedThisBar and low[1] <= buySetup.refALow and low[1] <= buySetup.refBLow
+            buySetup.perfected := true
+            buySetup.perfectionBar := bar_index - 1
+            buyPerfectedThisBar := true
+            lastEventText := "Buy Setup perfected"
+        else if low <= buySetup.refALow and low <= buySetup.refBLow
             buySetup.perfected := true
             buySetup.perfectionBar := bar_index
+            buyPerfectedThisBar := true
             lastEventText := "Buy Setup perfected"
 
-if sellSetup.count >= setupLength - 1 and not sellSetup.perfected
-    if not na(sellSetup.bar6High) and not na(sellSetup.bar7High)
-        if th0 > sellSetup.bar6High and th0 > sellSetup.bar7High
+if sellSetup.complete and not sellSetup.perfected and sellSetup.perfectionWindowOpen
+    if not na(sellSetup.refAHigh) and not na(sellSetup.refBHigh)
+        if sellSetupCompletedThisBar and high[1] >= sellSetup.refAHigh and high[1] >= sellSetup.refBHigh
+            sellSetup.perfected := true
+            sellSetup.perfectionBar := bar_index - 1
+            sellPerfectedThisBar := true
+            lastEventText := "Sell Setup perfected"
+        else if high >= sellSetup.refAHigh and high >= sellSetup.refBHigh
             sellSetup.perfected := true
             sellSetup.perfectionBar := bar_index
+            sellPerfectedThisBar := true
             lastEventText := "Sell Setup perfected"
 
 // ----------------------------------------------------------------------------
 // 5.6  TDST LINE MANAGEMENT  (§3.6)
 // ----------------------------------------------------------------------------
-// Buy Setup completion ⇒ TDST RESISTANCE at highest trueHigh of bars 1-9.
-if buySetupCompletedThisBar and showTDSTLines
-    if activeBuyTDST.active and not na(activeBuyTDST.lineObj)
-        line.delete(activeBuyTDST.lineObj)
-        label.delete(activeBuyTDST.lineLabel)
-    activeBuyTDST.lineObj := line.new(buySetup.bar1Index, buySetup.highestTrueHigh, bar_index + 1, buySetup.highestTrueHigh, color=tdstResistanceColor, width=2, extend=extend.right)
-    activeBuyTDST.lineLabel := label.new(bar_index + 1, buySetup.highestTrueHigh, "TDST R", style=label.style_none, textcolor=tdstResistanceColor, size=size.small)
-    activeBuyTDST.level := buySetup.highestTrueHigh
+// Level/active state is ALWAYS maintained — cancellation logic, alerts and
+// exposed series depend on it. Only the drawings are gated on showTDSTLines.
+
+// Buy Setup completion ⇒ TDST RESISTANCE (canonical: true high of Setup bar 1).
+if buySetupCompletedThisBar
+    tdstLvl = tdstSource == "Extreme of bars 1-9" ? buySetup.highestTrueHigh : buySetup.bar1TrueHigh
+    if showTDSTLines
+        if not na(activeBuyTDST.lineObj)
+            line.delete(activeBuyTDST.lineObj)
+            label.delete(activeBuyTDST.lineLabel)
+        activeBuyTDST.lineObj := line.new(buySetup.bar1Index, tdstLvl, bar_index + 1, tdstLvl, color=tdstResistanceColor, width=2, extend=extend.right)
+        activeBuyTDST.lineLabel := label.new(bar_index + 1, tdstLvl, "TDST R", style=label.style_none, textcolor=tdstResistanceColor, size=size.small)
+    activeBuyTDST.level := tdstLvl
     activeBuyTDST.startBar := buySetup.bar1Index
     activeBuyTDST.active := true
     activeBuyTDST.direction := +1
 
-// Sell Setup completion ⇒ TDST SUPPORT at lowest trueLow of bars 1-9.
-if sellSetupCompletedThisBar and showTDSTLines
-    if activeSellTDST.active and not na(activeSellTDST.lineObj)
-        line.delete(activeSellTDST.lineObj)
-        label.delete(activeSellTDST.lineLabel)
-    activeSellTDST.lineObj := line.new(sellSetup.bar1Index, sellSetup.lowestTrueLow, bar_index + 1, sellSetup.lowestTrueLow, color=tdstSupportColor, width=2, extend=extend.right)
-    activeSellTDST.lineLabel := label.new(bar_index + 1, sellSetup.lowestTrueLow, "TDST S", style=label.style_none, textcolor=tdstSupportColor, size=size.small)
-    activeSellTDST.level := sellSetup.lowestTrueLow
+// Sell Setup completion ⇒ TDST SUPPORT (canonical: true low of Setup bar 1).
+if sellSetupCompletedThisBar
+    tdstLvl = tdstSource == "Extreme of bars 1-9" ? sellSetup.lowestTrueLow : sellSetup.bar1TrueLow
+    if showTDSTLines
+        if not na(activeSellTDST.lineObj)
+            line.delete(activeSellTDST.lineObj)
+            label.delete(activeSellTDST.lineLabel)
+        activeSellTDST.lineObj := line.new(sellSetup.bar1Index, tdstLvl, bar_index + 1, tdstLvl, color=tdstSupportColor, width=2, extend=extend.right)
+        activeSellTDST.lineLabel := label.new(bar_index + 1, tdstLvl, "TDST S", style=label.style_none, textcolor=tdstSupportColor, size=size.small)
+    activeSellTDST.level := tdstLvl
     activeSellTDST.startBar := sellSetup.bar1Index
     activeSellTDST.active := true
     activeSellTDST.direction := -1
@@ -395,15 +555,28 @@ exposedSellTDSTLevel := activeSellTDST.active ? activeSellTDST.level : na
 // ----------------------------------------------------------------------------
 // 5.7  OPPOSING-SETUP COUNTDOWN CANCEL  (§3.10.1)
 // ----------------------------------------------------------------------------
+// A completed opposing Setup negates the phase: an active Countdown is
+// canceled, and a merely armed (pending) Countdown is disarmed. Either way,
+// only a fresh same-direction Setup 9 can re-arm it.
 if enableOpposingSetupCancel
-    if sellSetupCompletedThisBar and buyCountdown.active and not buyCountdown.complete
-        lastEventText := "Buy CD canceled: opposing setup"
-        clearCountdown(buyCountdown)
-        array.clear(buyCountdownBars)
-    if buySetupCompletedThisBar and sellCountdown.active and not sellCountdown.complete
-        lastEventText := "Sell CD canceled: opposing setup"
-        clearCountdown(sellCountdown)
-        array.clear(sellCountdownBars)
+    if sellSetupCompletedThisBar and not buyCountdown.complete
+        if buyCountdown.active
+            lastEventText := "Buy CD canceled: opposing setup"
+            buyCDCanceledThisBar := true
+            clearCountdown(buyCountdown)
+            array.clear(buyCountdownBars)
+        else if buyCountdown.armed
+            buyCountdown.armed := false
+            lastEventText := "Buy CD disarmed: opposing setup"
+    if buySetupCompletedThisBar and not sellCountdown.complete
+        if sellCountdown.active
+            lastEventText := "Sell CD canceled: opposing setup"
+            sellCDCanceledThisBar := true
+            clearCountdown(sellCountdown)
+            array.clear(sellCountdownBars)
+        else if sellCountdown.armed
+            sellCountdown.armed := false
+            lastEventText := "Sell CD disarmed: opposing setup"
 
 // ----------------------------------------------------------------------------
 // 5.8  RECYCLE — size-based  (§3.11.2)
@@ -412,18 +585,22 @@ recycleHit(float newSize, float oldSize) =>
     if na(newSize) or na(oldSize) or oldSize <= 0
         false
     else
+        lo = math.min(recycleMinPct, recycleMaxPct)
+        hi = math.max(recycleMinPct, recycleMaxPct)
         ratio = newSize / oldSize * 100.0
-        ratio >= recycleMinPct and ratio <= recycleMaxPct
+        ratio >= lo and ratio < hi
 
 if enableRecycle
     if buySetupCompletedThisBar and buyCountdown.active and not buyCountdown.complete
         if recycleHit(buySetup.size, lastBuySetupSize)
             lastEventText := "Buy CD canceled: recycle (size " + str.tostring(buySetup.size / lastBuySetupSize * 100, "#.#") + "%)"
+            buyCDCanceledThisBar := true
             clearCountdown(buyCountdown)
             array.clear(buyCountdownBars)
     if sellSetupCompletedThisBar and sellCountdown.active and not sellCountdown.complete
         if recycleHit(sellSetup.size, lastSellSetupSize)
             lastEventText := "Sell CD canceled: recycle (size " + str.tostring(sellSetup.size / lastSellSetupSize * 100, "#.#") + "%)"
+            sellCDCanceledThisBar := true
             clearCountdown(sellCountdown)
             array.clear(sellCountdownBars)
 
@@ -435,30 +612,66 @@ if sellSetupCompletedThisBar
     lastSellSetupSize := sellSetup.size
 
 // ----------------------------------------------------------------------------
+// 5.8b  COUNTDOWN CYCLE RESET + ARMING  (§3.7)
+// ----------------------------------------------------------------------------
+// A fresh same-direction Setup 9: (a) closes out a finished Countdown so the
+// state machine can cycle (the drawn 13 artifacts remain as history), and
+// (b) arms — or, after a recycle cancel this bar, re-arms — the Countdown
+// phase. An active, un-recycled Countdown just keeps running.
+if buySetupCompletedThisBar
+    if buyCountdown.complete
+        clearCountdown(buyCountdown)
+        array.clear(buyCountdownBars)
+    if not buyCountdown.active
+        buyCountdown.armed := true
+        buyCountdown.setupRefBarIdx := buySetup.completionBar
+        buyCountdown.tdstLevelAtArm := activeBuyTDST.active ? activeBuyTDST.level : na
+if sellSetupCompletedThisBar
+    if sellCountdown.complete
+        clearCountdown(sellCountdown)
+        array.clear(sellCountdownBars)
+    if not sellCountdown.active
+        sellCountdown.armed := true
+        sellCountdown.setupRefBarIdx := sellSetup.completionBar
+        sellCountdown.tdstLevelAtArm := activeSellTDST.active ? activeSellTDST.level : na
+
+// ----------------------------------------------------------------------------
 // 5.9  RECYCLE — 22-bar Setup extension  (§3.11.1)
 // ----------------------------------------------------------------------------
-// Once a Setup is complete and the same condition continues uninterrupted past
-// bar 9, count the extension. If 9 + extension reaches setupLength + 13 = 22,
-// recycle the same-direction Countdown.
+// Once a Setup is complete and the same condition continues UNINTERRUPTED past
+// bar 9, count the extension. If the run reaches setupLength + countdownLength
+// bars (canonical 22), recycle the same-direction Countdown: cancel it and
+// re-arm from the extended Setup. The first failing bar permanently ends
+// extension tracking for that Setup.
 if enable22BarRecycle
-    if buySetup.complete and buySetupCond and not buySetupCompletedThisBar
-        buySetup.extensionCount := buySetup.extensionCount + 1
-        if (setupLength + buySetup.extensionCount) >= 22 and buyCountdown.active and not buyCountdown.complete
-            lastEventText := "Buy CD canceled: 22-bar extension"
-            clearCountdown(buyCountdown)
-            array.clear(buyCountdownBars)
-            buySetup.extensionCount := 0
-    if buySetup.complete and not buySetupCond and not buySetupCompletedThisBar
-        buySetup.extensionCount := 0
-    if sellSetup.complete and sellSetupCond and not sellSetupCompletedThisBar
-        sellSetup.extensionCount := sellSetup.extensionCount + 1
-        if (setupLength + sellSetup.extensionCount) >= 22 and sellCountdown.active and not sellCountdown.complete
-            lastEventText := "Sell CD canceled: 22-bar extension"
-            clearCountdown(sellCountdown)
-            array.clear(sellCountdownBars)
-            sellSetup.extensionCount := 0
-    if sellSetup.complete and not sellSetupCond and not sellSetupCompletedThisBar
-        sellSetup.extensionCount := 0
+    if buySetup.complete and not buySetupCompletedThisBar and not buySetup.extensionBroken
+        if buySetupCond
+            buySetup.extensionCount := buySetup.extensionCount + 1
+            if buySetup.extensionCount >= countdownLength and buyCountdown.active and not buyCountdown.complete
+                lastEventText := "Buy CD canceled: 22-bar extension"
+                buyCDCanceledThisBar := true
+                clearCountdown(buyCountdown)
+                array.clear(buyCountdownBars)
+                buyCountdown.armed := true          // the extended Setup recycles as the new reference
+                buyCountdown.setupRefBarIdx := bar_index
+                buyCountdown.tdstLevelAtArm := activeBuyTDST.active ? activeBuyTDST.level : na
+                buySetup.extensionBroken := true    // one recycle per extension run
+        else
+            buySetup.extensionBroken := true
+    if sellSetup.complete and not sellSetupCompletedThisBar and not sellSetup.extensionBroken
+        if sellSetupCond
+            sellSetup.extensionCount := sellSetup.extensionCount + 1
+            if sellSetup.extensionCount >= countdownLength and sellCountdown.active and not sellCountdown.complete
+                lastEventText := "Sell CD canceled: 22-bar extension"
+                sellCDCanceledThisBar := true
+                clearCountdown(sellCountdown)
+                array.clear(sellCountdownBars)
+                sellCountdown.armed := true
+                sellCountdown.setupRefBarIdx := bar_index
+                sellCountdown.tdstLevelAtArm := activeSellTDST.active ? activeSellTDST.level : na
+                sellSetup.extensionBroken := true
+        else
+            sellSetup.extensionBroken := true
 
 // ----------------------------------------------------------------------------
 // 5.10  COUNTDOWN — initiation, continuation, qualifier  (§3.7-3.9)
@@ -466,45 +679,49 @@ if enable22BarRecycle
 buyCDCond  = close <= low[countdownLookback]    // §3.8 buy
 sellCDCond = close >= high[countdownLookback]   // §3.8 sell
 
-// --- BUY COUNTDOWN ---
-buy13QualifiedThisBar    = false
-buy13DisqualifiedThisBar = false
-sell13QualifiedThisBar   = false
+buy13QualifiedThisBar     = false
+buy13DisqualifiedThisBar  = false
+sell13QualifiedThisBar    = false
 sell13DisqualifiedThisBar = false
+buyCDCountedThisBar       = false   // a Countdown number was earned on this bar
+sellCDCountedThisBar      = false
 
-// Countdown initiation (§3.7) requires the most recent same-direction Setup
-// to have completed. Continuation/qualifier (§3.8-3.9) only require an active
-// Countdown — they must keep running even if a new same-direction Setup has
-// started building (which doesn't, on its own, cancel the existing Countdown).
+// Initiation (§3.7) requires an armed Countdown (most recent same-direction
+// Setup completed and not since negated). Setup bar 9 can be Countdown bar 1.
+// Initiation and continuation are mutually exclusive on a bar, so the
+// initiation bar counts exactly once.
 
 // --- BUY COUNTDOWN ---
-if buySetup.complete and buyCountdown.count == 0 and not buyCountdown.complete
-    // Bar 9 of Setup is bar 1 of Countdown iff qualifier met. (§3.7)
+if buyCountdown.armed and buyCountdown.count == 0 and not buyCountdown.complete
     if buyCDCond
         buyCountdown.count := 1
         buyCountdown.active := true
         buyCountdown.direction := -1
-        buyCountdown.setupRefBarIdx := buySetup.completionBar
         buyCountdown.lowestTrueLowInCountdown := tl0
         buyCountdown.trueRangeAtExtreme := tr0
         buyCountdown.extremeBar := bar_index
+        if effQualifierBar == 1
+            buyCountdown.bar8Close := close
         array.push(buyCountdownBars, bar_index)
+        buyCDCountedThisBar := true
         lastEventText := "Buy CD 1 initiated"
-
-if buyCountdown.active and not buyCountdown.complete and buyCountdown.count > 0
+else if buyCountdown.active and not buyCountdown.complete
+    // Track the phase extreme on EVERY bar of the Countdown phase (§3.12),
+    // including bars that do not increment the count.
+    if tl0 < buyCountdown.lowestTrueLowInCountdown
+        buyCountdown.lowestTrueLowInCountdown := tl0
+        buyCountdown.trueRangeAtExtreme := tr0
+        buyCountdown.extremeBar := bar_index
     if buyCountdown.count < countdownLength - 1
-        // Standard increment 1..12. (§3.8)
+        // Standard increment. (§3.8)
         if buyCDCond
             buyCountdown.count := buyCountdown.count + 1
             array.push(buyCountdownBars, bar_index)
-            if tl0 < buyCountdown.lowestTrueLowInCountdown
-                buyCountdown.lowestTrueLowInCountdown := tl0
-                buyCountdown.trueRangeAtExtreme := tr0
-                buyCountdown.extremeBar := bar_index
-            if buyCountdown.count == qualifierBar
+            buyCDCountedThisBar := true
+            if buyCountdown.count == effQualifierBar
                 buyCountdown.bar8Close := close
-    else if buyCountdown.count == countdownLength - 1
-        // Awaiting bar 13 — must satisfy CD condition AND 13-vs-8 qualifier. (§3.9)
+    else
+        // Awaiting final bar — must satisfy CD condition AND qualifier. (§3.9)
         if buyCDCond
             qualifier = (not requireQualifier) or na(buyCountdown.bar8Close) or (low <= buyCountdown.bar8Close)
             if qualifier
@@ -514,12 +731,11 @@ if buyCountdown.active and not buyCountdown.complete and buyCountdown.count > 0
                 buyCountdown.completionBar := bar_index
                 buyCountdown.awaitingQualifier := false
                 array.push(buyCountdownBars, bar_index)
-                if tl0 < buyCountdown.lowestTrueLowInCountdown
-                    buyCountdown.lowestTrueLowInCountdown := tl0
-                    buyCountdown.trueRangeAtExtreme := tr0
-                    buyCountdown.extremeBar := bar_index
+                buyCDCountedThisBar := true
                 // Risk Level (§3.12).
                 buyCountdown.riskLevel := buyCountdown.lowestTrueLowInCountdown - buyCountdown.trueRangeAtExtreme
+                buyActiveRiskLevel := buyCountdown.riskLevel
+                buyActiveRisk13Bar := bar_index
                 buy13QualifiedThisBar := true
                 lastEventText := "Buy CD 13 qualified"
             else
@@ -528,30 +744,32 @@ if buyCountdown.active and not buyCountdown.complete and buyCountdown.count > 0
                 lastEventText := "Buy CD 13 disqualified — waiting"
 
 // --- SELL COUNTDOWN ---
-if sellSetup.complete and sellCountdown.count == 0 and not sellCountdown.complete
+if sellCountdown.armed and sellCountdown.count == 0 and not sellCountdown.complete
     if sellCDCond
         sellCountdown.count := 1
         sellCountdown.active := true
         sellCountdown.direction := +1
-        sellCountdown.setupRefBarIdx := sellSetup.completionBar
         sellCountdown.highestTrueHighInCountdown := th0
         sellCountdown.trueRangeAtExtreme := tr0
         sellCountdown.extremeBar := bar_index
+        if effQualifierBar == 1
+            sellCountdown.bar8Close := close
         array.push(sellCountdownBars, bar_index)
+        sellCDCountedThisBar := true
         lastEventText := "Sell CD 1 initiated"
-
-if sellCountdown.active and not sellCountdown.complete and sellCountdown.count > 0
+else if sellCountdown.active and not sellCountdown.complete
+    if th0 > sellCountdown.highestTrueHighInCountdown
+        sellCountdown.highestTrueHighInCountdown := th0
+        sellCountdown.trueRangeAtExtreme := tr0
+        sellCountdown.extremeBar := bar_index
     if sellCountdown.count < countdownLength - 1
         if sellCDCond
             sellCountdown.count := sellCountdown.count + 1
             array.push(sellCountdownBars, bar_index)
-            if th0 > sellCountdown.highestTrueHighInCountdown
-                sellCountdown.highestTrueHighInCountdown := th0
-                sellCountdown.trueRangeAtExtreme := tr0
-                sellCountdown.extremeBar := bar_index
-            if sellCountdown.count == qualifierBar
+            sellCDCountedThisBar := true
+            if sellCountdown.count == effQualifierBar
                 sellCountdown.bar8Close := close
-    else if sellCountdown.count == countdownLength - 1
+    else
         if sellCDCond
             qualifier = (not requireQualifier) or na(sellCountdown.bar8Close) or (high >= sellCountdown.bar8Close)
             if qualifier
@@ -561,11 +779,10 @@ if sellCountdown.active and not sellCountdown.complete and sellCountdown.count >
                 sellCountdown.completionBar := bar_index
                 sellCountdown.awaitingQualifier := false
                 array.push(sellCountdownBars, bar_index)
-                if th0 > sellCountdown.highestTrueHighInCountdown
-                    sellCountdown.highestTrueHighInCountdown := th0
-                    sellCountdown.trueRangeAtExtreme := tr0
-                    sellCountdown.extremeBar := bar_index
+                sellCDCountedThisBar := true
                 sellCountdown.riskLevel := sellCountdown.highestTrueHighInCountdown + sellCountdown.trueRangeAtExtreme
+                sellActiveRiskLevel := sellCountdown.riskLevel
+                sellActiveRisk13Bar := bar_index
                 sell13QualifiedThisBar := true
                 lastEventText := "Sell CD 13 qualified"
             else
@@ -576,23 +793,32 @@ if sellCountdown.active and not sellCountdown.complete and sellCountdown.count >
 // ----------------------------------------------------------------------------
 // 5.11  TDST VIOLATION CANCEL  (§3.10.2)
 // ----------------------------------------------------------------------------
-buyTDSTBroken  = false  // active SELL TDST support broken by buy-countdown side? No —
-sellTDSTBroken = false
-// Per spec: a Buy Countdown is canceled when true high closes ABOVE the most
-// recent SELL Setup's TDST Support. (Sounds counter-intuitive, but follows §3.10.2
-// literally — the "support" line of the most recent sell setup acts as a ceiling
-// for the buy countdown's bearish thesis when broken to the upside.)
+// Canonical: a Buy Countdown is canceled when price closes above the BUY-side
+// TDST Resistance of its own Setup phase (the downtrend it is counting is
+// negated); a Sell Countdown when price closes below the SELL-side TDST
+// Support. The reference is the level snapshotted when the phase was armed —
+// a smaller intervening Setup that the recycle logic ignored must not tighten
+// the cancel threshold mid-count. A pending (armed, not yet counting)
+// Countdown is disarmed by the same violation.
 if enableTDSTCancel
-    if buyCountdown.active and not buyCountdown.complete and activeSellTDST.active
-        breakHit = tdstBreakRule == "intrabar" ? th0 > activeSellTDST.level : (th0 > activeSellTDST.level and close > activeSellTDST.level)
+    if not buyCountdown.complete and (buyCountdown.active or buyCountdown.armed) and not na(buyCountdown.tdstLevelAtArm)
+        breakHit = tdstBreakRule == "intrabar" ? th0 > buyCountdown.tdstLevelAtArm : close > buyCountdown.tdstLevelAtArm
         if breakHit
-            lastEventText := "Buy CD canceled: TDST violation"
+            if buyCountdown.active
+                lastEventText := "Buy CD canceled: TDST violation"
+                buyCDCanceledThisBar := true
+            else
+                lastEventText := "Buy CD disarmed: TDST violation"
             clearCountdown(buyCountdown)
             array.clear(buyCountdownBars)
-    if sellCountdown.active and not sellCountdown.complete and activeBuyTDST.active
-        breakHit = tdstBreakRule == "intrabar" ? tl0 < activeBuyTDST.level : (tl0 < activeBuyTDST.level and close < activeBuyTDST.level)
+    if not sellCountdown.complete and (sellCountdown.active or sellCountdown.armed) and not na(sellCountdown.tdstLevelAtArm)
+        breakHit = tdstBreakRule == "intrabar" ? tl0 < sellCountdown.tdstLevelAtArm : close < sellCountdown.tdstLevelAtArm
         if breakHit
-            lastEventText := "Sell CD canceled: TDST violation"
+            if sellCountdown.active
+                lastEventText := "Sell CD canceled: TDST violation"
+                sellCDCanceledThisBar := true
+            else
+                lastEventText := "Sell CD disarmed: TDST violation"
             clearCountdown(sellCountdown)
             array.clear(sellCountdownBars)
 
@@ -605,48 +831,47 @@ sellTDSTSupportBroken    = activeSellTDST.active and close < activeSellTDST.leve
 // 6. PLOTTING / DRAWING  (§7, §8)
 // ============================================================================
 
-// 8.1  Setup count labels.
-if buySetup.count >= 1 and buySetup.count <= setupLength and showThisSetupCount(buySetup.count)
+// 8.1  Setup count labels — only on bars that earned a count.
+if buySetupCountedThisBar and showThisSetupCount(buySetup.count)
     bigOne = buySetup.count == setupLength
     label.new(bar_index, low, str.tostring(buySetup.count),
          style=label.style_label_up, color=color.new(color.black, 100),
          textcolor=buySetupColor, yloc=yloc.belowbar,
          size=bigOne ? sizeOf(keyCountSize) : sizeOf(setupCountSize))
 
-if sellSetup.count >= 1 and sellSetup.count <= setupLength and showThisSetupCount(sellSetup.count)
+if sellSetupCountedThisBar and showThisSetupCount(sellSetup.count)
     bigOne = sellSetup.count == setupLength
     label.new(bar_index, high, str.tostring(sellSetup.count),
          style=label.style_label_down, color=color.new(color.black, 100),
          textcolor=sellSetupColor, yloc=yloc.abovebar,
          size=bigOne ? sizeOf(keyCountSize) : sizeOf(setupCountSize))
 
-// 8.1  Perfection markers (blue dot).
-if showPerfectionMarker and buySetup.perfected and buySetup.perfectionBar == bar_index
-    label.new(bar_index, low, "•",
+// 8.1  Perfection markers (blue dot) — drawn at the bar that perfected
+// (perfectionBar can be the completion bar's predecessor, i.e. bar 8).
+if showPerfectionMarker and buyPerfectedThisBar
+    label.new(buySetup.perfectionBar, low, "•",
          style=label.style_label_up, color=color.new(color.black, 100),
          textcolor=perfectionColor, yloc=yloc.belowbar, size=size.normal)
 
-if showPerfectionMarker and sellSetup.perfected and sellSetup.perfectionBar == bar_index
-    label.new(bar_index, high, "•",
+if showPerfectionMarker and sellPerfectedThisBar
+    label.new(sellSetup.perfectionBar, high, "•",
          style=label.style_label_down, color=color.new(color.black, 100),
          textcolor=perfectionColor, yloc=yloc.abovebar, size=size.normal)
 
-// 8.1  Countdown count labels.
-if buyCountdown.active and buyCountdown.count >= 1 and showThisCountdownCount(buyCountdown.count)
-    isBar13 = buyCountdown.count == countdownLength and buyCountdown.qualified
-    txt = isBar13 ? "13" : str.tostring(buyCountdown.count)
-    label.new(bar_index, low, txt,
+// 8.1  Countdown count labels — only on bars that earned a count.
+if buyCDCountedThisBar and showThisCountdownCount(buyCountdown.count)
+    isFinal = buyCountdown.count == countdownLength and buyCountdown.qualified
+    label.new(bar_index, low, str.tostring(buyCountdown.count),
          style=label.style_label_up, color=color.new(color.black, 100),
          textcolor=buySetupColor, yloc=yloc.belowbar,
-         size=isBar13 ? sizeOf(keyCountSize) : sizeOf(setupCountSize))
+         size=isFinal ? sizeOf(keyCountSize) : sizeOf(setupCountSize))
 
-if sellCountdown.active and sellCountdown.count >= 1 and showThisCountdownCount(sellCountdown.count)
-    isBar13 = sellCountdown.count == countdownLength and sellCountdown.qualified
-    txt = isBar13 ? "13" : str.tostring(sellCountdown.count)
-    label.new(bar_index, high, txt,
+if sellCDCountedThisBar and showThisCountdownCount(sellCountdown.count)
+    isFinal = sellCountdown.count == countdownLength and sellCountdown.qualified
+    label.new(bar_index, high, str.tostring(sellCountdown.count),
          style=label.style_label_down, color=color.new(color.black, 100),
          textcolor=sellSetupColor, yloc=yloc.abovebar,
-         size=isBar13 ? sizeOf(keyCountSize) : sizeOf(setupCountSize))
+         size=isFinal ? sizeOf(keyCountSize) : sizeOf(setupCountSize))
 
 // 8.1  Disqualified 13 placeholder.
 if showDisqualified13 and buy13DisqualifiedThisBar
@@ -659,17 +884,13 @@ if showDisqualified13 and sell13DisqualifiedThisBar
          style=label.style_label_down, color=color.new(color.black, 100),
          textcolor=disqualifiedColor, yloc=yloc.abovebar, size=size.small)
 
-// 8.3  Risk Level + 8.4  12-bar window box on Buy 13 qualified.
+// 8.3  Risk Level line/label on a qualified 13.
 if buy13QualifiedThisBar and showRiskLevel
     if not na(buyRiskLine)
         line.delete(buyRiskLine)
         label.delete(buyRiskLabel)
     buyRiskLine := line.new(bar_index, buyCountdown.riskLevel, bar_index + 12, buyCountdown.riskLevel, color=riskLevelColor, style=line.style_dashed, width=1)
     buyRiskLabel := label.new(bar_index + 12, buyCountdown.riskLevel, "Risk: " + fmt(buyCountdown.riskLevel), style=label.style_none, textcolor=riskLevelColor, size=size.small)
-    if show12BarBox
-        if not na(buy12BarBox)
-            box.delete(buy12BarBox)
-        buy12BarBox := box.new(bar_index, low, bar_index + 12, buyCountdown.riskLevel, border_color=color.new(buySetupColor, 70), bgcolor=color.new(buySetupColor, 92))
 
 if sell13QualifiedThisBar and showRiskLevel
     if not na(sellRiskLine)
@@ -677,60 +898,100 @@ if sell13QualifiedThisBar and showRiskLevel
         label.delete(sellRiskLabel)
     sellRiskLine := line.new(bar_index, sellCountdown.riskLevel, bar_index + 12, sellCountdown.riskLevel, color=riskLevelColor, style=line.style_dashed, width=1)
     sellRiskLabel := label.new(bar_index + 12, sellCountdown.riskLevel, "Risk: " + fmt(sellCountdown.riskLevel), style=label.style_none, textcolor=riskLevelColor, size=size.small)
-    if show12BarBox
-        if not na(sell12BarBox)
-            box.delete(sell12BarBox)
-        sell12BarBox := box.new(bar_index, sellCountdown.riskLevel, bar_index + 12, high, border_color=color.new(sellSetupColor, 70), bgcolor=color.new(sellSetupColor, 92))
+
+// 8.4  12-bar reversal window box — independent of the Risk Level toggle.
+if buy13QualifiedThisBar and show12BarBox
+    if not na(buy12BarBox)
+        box.delete(buy12BarBox)
+    buy12BarBox := box.new(bar_index, low, bar_index + 12, buyCountdown.riskLevel, border_color=color.new(buySetupColor, 70), bgcolor=color.new(buySetupColor, 92))
+
+if sell13QualifiedThisBar and show12BarBox
+    if not na(sell12BarBox)
+        box.delete(sell12BarBox)
+    sell12BarBox := box.new(bar_index, sellCountdown.riskLevel, bar_index + 12, high, border_color=color.new(sellSetupColor, 70), bgcolor=color.new(sellSetupColor, 92))
+
+// 8.4b  Risk Zone shading — the stop-buffer band between the Countdown
+// extreme and the Risk Level, across the 12-bar window.
+if buy13QualifiedThisBar and showRiskZone
+    if not na(buyRiskZoneBox)
+        box.delete(buyRiskZoneBox)
+    buyRiskZoneBox := box.new(bar_index, buyCountdown.lowestTrueLowInCountdown, bar_index + 12, buyCountdown.riskLevel, border_color=color.new(riskLevelColor, 70), bgcolor=color.new(riskLevelColor, 88))
+
+if sell13QualifiedThisBar and showRiskZone
+    if not na(sellRiskZoneBox)
+        box.delete(sellRiskZoneBox)
+    sellRiskZoneBox := box.new(bar_index, sellCountdown.riskLevel, bar_index + 12, sellCountdown.highestTrueHighInCountdown, border_color=color.new(riskLevelColor, 70), bgcolor=color.new(riskLevelColor, 88))
 
 // ----------------------------------------------------------------------------
 // 5.12  12-BAR RULE EXPIRY + RISK LEVEL VIOLATION  (§3.13)
 // ----------------------------------------------------------------------------
-buyRiskViolated     = buyCountdown.complete and not na(buyCountdown.riskLevel) and close < buyCountdown.riskLevel and close[1] >= buyCountdown.riskLevel
-sellRiskViolated    = sellCountdown.complete and not na(sellCountdown.riskLevel) and close > sellCountdown.riskLevel and close[1] <= sellCountdown.riskLevel
+// Both events only apply while a 12-bar reversal window is live. They read
+// the snapshot trackers (not CountdownState) so the window survives the
+// Countdown cycle reset when a fresh same-direction Setup 9 completes inside
+// it; the trackers are retired once the window is violated or closes.
+buyRiskViolated  = not na(buyActiveRiskLevel) and not na(buyActiveRisk13Bar) and (bar_index - buyActiveRisk13Bar) <= 12 and close < buyActiveRiskLevel and close[1] >= buyActiveRiskLevel
+sellRiskViolated = not na(sellActiveRiskLevel) and not na(sellActiveRisk13Bar) and (bar_index - sellActiveRisk13Bar) <= 12 and close > sellActiveRiskLevel and close[1] <= sellActiveRiskLevel
 
-buy12BarExpired = buyCountdown.complete and not na(buyCountdown.completionBar) and (bar_index - buyCountdown.completionBar) == 12
-sell12BarExpired = sellCountdown.complete and not na(sellCountdown.completionBar) and (bar_index - sellCountdown.completionBar) == 12
+buy12BarExpired  = not na(buyActiveRisk13Bar) and (bar_index - buyActiveRisk13Bar) == 12
+sell12BarExpired = not na(sellActiveRisk13Bar) and (bar_index - sellActiveRisk13Bar) == 12
 
 if buyRiskViolated
     lastEventText := "Buy Risk violated"
     if not na(buy12BarBox)
         box.delete(buy12BarBox)
         buy12BarBox := na
+    if not na(buyRiskZoneBox)
+        box.delete(buyRiskZoneBox)
+        buyRiskZoneBox := na
 if sellRiskViolated
     lastEventText := "Sell Risk violated"
     if not na(sell12BarBox)
         box.delete(sell12BarBox)
         sell12BarBox := na
+    if not na(sellRiskZoneBox)
+        box.delete(sellRiskZoneBox)
+        sellRiskZoneBox := na
 
 if buy12BarExpired
-    lastEventText := "Buy 12-bar window expired"
+    lastEventText := "Buy 12-bar window closed"
 if sell12BarExpired
-    lastEventText := "Sell 12-bar window expired"
+    lastEventText := "Sell 12-bar window closed"
+
+// Retire the window trackers once violated or closed.
+if buyRiskViolated or buy12BarExpired
+    buyActiveRiskLevel := na
+    buyActiveRisk13Bar := na
+if sellRiskViolated or sell12BarExpired
+    sellActiveRiskLevel := na
+    sellActiveRisk13Bar := na
 
 
 // ============================================================================
 // 7. ALERT CONDITIONS  (§7.2)
 // ============================================================================
-alertcondition(buySetupCompletedThisBar,                      "Buy Setup 9 (any)",            "Buy Setup 9 completed")
-alertcondition(buySetupCompletedThisBar and buySetup.perfected, "Buy Setup 9 (perfected)",      "Buy Setup 9 perfected at completion")
-alertcondition(buySetup.perfectionBar == bar_index and buySetup.perfected, "Buy Setup perfected (any bar)", "Buy Setup perfection achieved")
-alertcondition(sellSetupCompletedThisBar,                     "Sell Setup 9 (any)",           "Sell Setup 9 completed")
-alertcondition(sellSetupCompletedThisBar and sellSetup.perfected, "Sell Setup 9 (perfected)",     "Sell Setup 9 perfected at completion")
-alertcondition(sellSetup.perfectionBar == bar_index and sellSetup.perfected, "Sell Setup perfected (any bar)", "Sell Setup perfection achieved")
+alertcondition(buySetupCompletedThisBar,                          "Buy Setup 9 (any)",              "Buy Setup 9 completed")
+alertcondition(buySetupCompletedThisBar and buySetup.perfected,   "Buy Setup 9 (perfected)",        "Buy Setup 9 perfected at completion")
+alertcondition(buyPerfectedThisBar,                               "Buy Setup perfected (any bar)",  "Buy Setup perfection achieved")
+alertcondition(sellSetupCompletedThisBar,                         "Sell Setup 9 (any)",             "Sell Setup 9 completed")
+alertcondition(sellSetupCompletedThisBar and sellSetup.perfected, "Sell Setup 9 (perfected)",       "Sell Setup 9 perfected at completion")
+alertcondition(sellPerfectedThisBar,                              "Sell Setup perfected (any bar)", "Sell Setup perfection achieved")
 
-alertcondition(buy13QualifiedThisBar,                         "Buy Countdown 13 (qualified)", "Qualified Buy 13")
-alertcondition(buy13DisqualifiedThisBar,                      "Buy Countdown 13 (disqualified)","Disqualified Buy 13 placeholder")
-alertcondition(sell13QualifiedThisBar,                        "Sell Countdown 13 (qualified)","Qualified Sell 13")
-alertcondition(sell13DisqualifiedThisBar,                     "Sell Countdown 13 (disqualified)","Disqualified Sell 13 placeholder")
+alertcondition(buy13QualifiedThisBar,                             "Buy Countdown 13 (qualified)",   "Qualified Buy 13")
+alertcondition(buy13DisqualifiedThisBar,                          "Buy Countdown 13 (disqualified)","Disqualified Buy 13 placeholder")
+alertcondition(sell13QualifiedThisBar,                            "Sell Countdown 13 (qualified)",  "Qualified Sell 13")
+alertcondition(sell13DisqualifiedThisBar,                         "Sell Countdown 13 (disqualified)","Disqualified Sell 13 placeholder")
 
-alertcondition(buyTDSTResistanceBroken,                       "Buy TDST Resistance broken",   "Close above buy-setup TDST resistance")
-alertcondition(sellTDSTSupportBroken,                         "Sell TDST Support broken",     "Close below sell-setup TDST support")
+alertcondition(buyCDCanceledThisBar,                              "Buy Countdown canceled",         "Buy Countdown canceled (TDST violation, opposing Setup, or recycle)")
+alertcondition(sellCDCanceledThisBar,                             "Sell Countdown canceled",        "Sell Countdown canceled (TDST violation, opposing Setup, or recycle)")
 
-alertcondition(buyRiskViolated,                               "Buy Risk Level violated",      "Close below qualified Buy 13 Risk Level")
-alertcondition(sellRiskViolated,                              "Sell Risk Level violated",     "Close above qualified Sell 13 Risk Level")
+alertcondition(buyTDSTResistanceBroken,                           "Buy TDST Resistance broken",     "Close above buy-setup TDST resistance")
+alertcondition(sellTDSTSupportBroken,                             "Sell TDST Support broken",       "Close below sell-setup TDST support")
 
-alertcondition(buy12BarExpired,                               "Buy 12-bar rule expired",      "Buy 13: 12 bars elapsed without reversal")
-alertcondition(sell12BarExpired,                              "Sell 12-bar rule expired",     "Sell 13: 12 bars elapsed without reversal")
+alertcondition(buyRiskViolated,                                   "Buy Risk Level violated",        "Close below qualified Buy 13 Risk Level")
+alertcondition(sellRiskViolated,                                  "Sell Risk Level violated",       "Close above qualified Sell 13 Risk Level")
+
+alertcondition(buy12BarExpired,                                   "Buy 12-bar rule expired",        "Buy 13: 12-bar reversal window closed")
+alertcondition(sell12BarExpired,                                  "Sell 12-bar rule expired",       "Sell 13: 12-bar reversal window closed")
 
 
 // ============================================================================
@@ -740,8 +1001,8 @@ if showDiagnosticTable
     if na(diagTable)
         diagTable := table.new(posOf(tablePosition), 2, 9, bgcolor=color.new(color.black, 80), border_width=1)
     if barstate.islast
-        stateBuy = buyCountdown.complete ? "CD COMPLETE" : buyCountdown.active ? ("CD " + str.tostring(buyCountdown.count)) : buySetup.complete ? "SETUP COMPLETE" : buySetup.count > 0 ? ("SETUP " + str.tostring(buySetup.count)) : "IDLE"
-        stateSell = sellCountdown.complete ? "CD COMPLETE" : sellCountdown.active ? ("CD " + str.tostring(sellCountdown.count)) : sellSetup.complete ? "SETUP COMPLETE" : sellSetup.count > 0 ? ("SETUP " + str.tostring(sellSetup.count)) : "IDLE"
+        stateBuy = buyCountdown.complete ? "CD COMPLETE" : buyCountdown.active ? ("CD " + str.tostring(buyCountdown.count)) : buyCountdown.armed ? "CD ARMED" : buySetup.complete ? "SETUP COMPLETE" : buySetup.count > 0 ? ("SETUP " + str.tostring(buySetup.count)) : "IDLE"
+        stateSell = sellCountdown.complete ? "CD COMPLETE" : sellCountdown.active ? ("CD " + str.tostring(sellCountdown.count)) : sellCountdown.armed ? "CD ARMED" : sellSetup.complete ? "SETUP COMPLETE" : sellSetup.count > 0 ? ("SETUP " + str.tostring(sellSetup.count)) : "IDLE"
         table.cell(diagTable, 0, 0, "MP_TD_Seq_V1", text_color=color.white, bgcolor=color.new(color.gray, 50))
         table.cell(diagTable, 1, 0, "state", text_color=color.white, bgcolor=color.new(color.gray, 50))
         table.cell(diagTable, 0, 1, "Buy state",  text_color=color.white)
