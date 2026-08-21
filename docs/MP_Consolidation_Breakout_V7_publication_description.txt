@@ -1,0 +1,90 @@
+PASTE-READY PUBLICATION DESCRIPTION — Consolidation & Breakout Detector v7
+===========================================================================
+Paste everything below the line into the description box of TradingView's
+"Publish script" dialog. This description becomes the page that opens from
+the indicator's "About this script..." menu item.
+
+At each [ INSERT IMAGE: ... ] marker, insert the matching PNG from docs/img/
+(drag & drop or the editor's image control — PNG, under 2 MB, max 2000x2000,
+all five files comply). Delete the marker line after inserting.
+
+---------------------------------------------------------------------------
+
+Finds periods where price coils into a tight range, flags confirmed breakouts, and manages the full trade around each one: an exact entry/stop/target plan drawn on the chart, a precision retest entry, failed-breakout and stop warnings, and frozen S/R zones that flip roles when broken. Confirms on bar close; confirmed history never repaints.
+
+■ THE SIGNAL LIFECYCLE
+
+Every setup moves through the same pipeline. A consolidation ("coil") must live at least Min Coil Bars before its break can count. The first close beyond the boundary is the raw break (small circle) — the zone FREEZES at that instant, so breakout candles can't inflate the very level they are breaking. The break must then hold for N total closes (Confirmation Closes, break bar included) before BREAK prints. A failed attempt marks a grey ✕ and the machine resets — it will not re-enter the same direction that just failed. One signal per coil; it re-arms when a fresh coil forms. A grace window lets a slow break still signal for a few bars after the squeeze ends.
+
+[ INSERT IMAGE: fig1-signal-lifecycle.png ]
+
+Key mechanics behind the pipeline:
+• Prior-bar window — the range is measured over the window ending at the PREVIOUS bar, so a breakout candle can't distort its own level.
+• Expand-only boundaries — a live coil's edges can widen but never shrink; the breakout level is the structural boundary you actually see.
+• Buffered confirmation — with an ATR buffer set, confirmation closes are held to the same standard as the break; a close between the level and level+buffer stalls the count, a close back through the level kills the attempt.
+
+■ ZONE ANATOMY
+
+Zones are boxes with shaded BANDS along their edges, because S/R is an area, not a line. The box outlines the full wick range; each band spans wick-extreme to body-extreme. R×n S×m on the box counts how many bars touched each edge — zone strength. After a confirmed break, the broken level extends forward as a thick flip line: broken resistance acts as new support (and vice versa). If price closes back through it, the line greys out and FAIL ✕ prints.
+
+[ INSERT IMAGE: fig2-zone-anatomy.png ]
+
+Zone states: dashed blue border = still forming (edges can expand) · solid green/red border = frozen, broke up/down · solid grey border = coil ended without a break — the zone stays live S/R, keeps extending right, and is stamped "broke up/down" only when a close clears an edge decisively (by the touch/break band).
+
+■ TWO DETECTION ENGINES
+
+Fixed mode calls the market consolidated when the window's high-to-low range is below a set % of price. Adaptive mode (recommended) compares the range to the symbol's OWN typical range — the median (robust to one-off volatility spikes) or SMA of the last Baseline Length readings — times the Compression Factor, so it auto-scales across symbols and timeframes. The adaptive threshold LOCKS at coil onset: without the lock, the coil's own tight readings would drag the baseline down and a long coil would flicker off/on, re-arming duplicate signals.
+
+[ INSERT IMAGE: fig3-detection-modes.png ]
+
+■ THE TRADE PLAN
+
+On every confirmed BREAK, all levels are computed from the frozen zone and never move afterward. Entry = the broken level. Targets are measured moves — the zone height projected from entry (1.0× and 2.0× by default; keep T2 ≥ T1). Stops come in three flavors: zone midpoint (tight, default), opposite zone edge (classic), or an ATR multiple beyond entry.
+
+[ INSERT IMAGE: fig4-trade-plan.png ]
+
+How the plan resolves:
+• STOP ✕ — a bar CLOSES through the stop (a wick through it doesn't count; a bar that wicks a target but closes through the stop counts as stopped).
+• T1 ◆ — target 1 touched; consider partials / stop to entry (the table says so).
+• T2 ◆ — target 2 touched after T1; plan complete. One wide bar through both credits T1 and T2 on the same bar.
+• FAIL ✕ — independent of the stop: a close back through the broken level means the premise is dead, usually long before the stop is hit.
+• A fresh coil supersedes any open plan — new structure outranks an old trade.
+
+■ RETEST ENTRIES
+
+Chasing a confirmation close pays the worst price of the move. After a BREAK, if price pulls back to within the Retest Band (ATR multiple) of the broken level and closes back in the breakout direction, RETEST prints — an entry near the level itself with the stop naturally close by. Valid only within the Retest Window; one retest per breakout.
+
+■ READING THE CHART
+
+[ INSERT IMAGE: fig5-signal-legend.png ]
+
+Backgrounds: yellow = coiling now · orange = a break is being confirmed. The red/green step-lines are the live coil's traded boundaries (frozen while a break confirms). The info table shows Status, Mode, Range % vs Threshold, live levels, zone Strength, confirmation progress, and the full plan with its narrative state.
+
+■ ALERTS
+
+Alert conditions: Bullish/Bearish Breakout · Entering Consolidation · Raw Break Up/Down (unconfirmed) · Bullish/Bearish Retest Entry · Failed Breakout · Stop Hit · Target 1 Hit · Target 2 Hit.
+Or create ONE alert using "Any alert() function call" and every event arrives with live numbers, e.g.: BREAK ▲ TICKER 15 | Entry 26.81 | Stop 26.57 | T1 27.27 | T2 27.74. All alerts fire on closed bars only.
+
+■ KEY SETTINGS
+
+• Detection Mode — Adaptive (recommended) or Fixed %.
+• Consolidation Lookback Period (20) — window for the range measurement.
+• Confirmation Closes (2) — more = fewer, later, higher-quality signals.
+• Min Coil Bars (3) — screens out 1–2 bar accidental squeezes.
+• Breakout Grace Bars (5) — rescues slow, structurally valid breakouts.
+• Breakout Level Basis — Wicks (conservative) or Closes (wick-immune, earlier).
+• Compression Factor (0.6) / Baseline Length (100) / Median-or-SMA — adaptive engine.
+• ATR Length (14) — drives the breakout buffer, touch/retest bands and ATR stops.
+• Breakout Buffer, Volume filter — optional signal-quality filters.
+• Stop-Loss Placement, Stop ATR Multiple, Target 1/2 multiples, Keep Past Plans.
+• Retest Band (0.5 ATR), Retest Window (20 bars), Failed-Breakout Warning.
+• Zones: max kept (8), S/R edge bands, Touch/Break Band (0.25 ATR), extend unbroken zones.
+• Full display control: zone/band fills, table position, every table cell color.
+
+The "ℹ️ About This Script" group at the top of the settings panel carries this documentation on-chart — hover each ⓘ icon.
+
+■ NOTES & LIMITATIONS
+
+All signals confirm on bar close; the current unclosed bar can still change, confirmed history does not repaint, and frozen zones, flip lines and plan levels never move after creation. Adaptive mode needs warm-up history (Lookback + Baseline bars). A prior spike high stays in the window and can become the resistance the next break must clear — the touch counts help judge how meaningful the edge is. No indicator eliminates false breakouts; the coil-age, confirmation and filter controls reduce them. Educational tool only — not financial advice.
+
+No zones showing? Compare Range % vs Threshold in the table: raise the threshold (Fixed) or the Compression Factor (Adaptive).
