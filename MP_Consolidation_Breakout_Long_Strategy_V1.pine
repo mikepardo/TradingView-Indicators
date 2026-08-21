@@ -196,6 +196,7 @@ var float planStop     = na   // current stop (can rise to break-even)
 var float planT1       = na
 var float planT2       = na
 var int   planBar      = na
+var int   planFlipBar  = na   // which flip signal the plan belongs to
 var bool  t1Done       = false
 
 var int   flipDir    = 0
@@ -224,6 +225,7 @@ if (confirmedBreakoutUp or confirmedBreakoutDown) and barstate.isconfirmed
         planT1       := level + target1Mult * zoneH
         planT2       := level + target2Mult * zoneH
         planBar      := bar_index
+        planFlipBar  := flipBar
         t1Done       := false
 
         if not wantRetestEntry and inWindow and planStop < close
@@ -248,7 +250,9 @@ else if barstate.isconfirmed
         float band = retestBandAtr * atrVal
         if not retestDone and bar_index - flipBar <= retestWindow and low <= flipLevel + band and close > flipLevel
             retestDone := true
-            if wantRetestEntry and inWindow and strategy.position_size == 0 and not na(planStop) and planStop < close and bar_index - planBar <= retestWindow
+            // planFlipBar == flipBar: the retest may only trade a plan adopted
+            // for THIS flip signal — never a stale plan from an earlier zone
+            if wantRetestEntry and inWindow and strategy.position_size == 0 and not na(planStop) and planStop < close and planFlipBar == flipBar and bar_index - planBar <= retestWindow
                 float qty = sizingMode == "Risk % of equity (stop-based)" ? (strategy.equity * riskPct / 100) / (close - planStop) : (strategy.equity * equityPct / 100) / close
                 if qty > 0
                     strategy.entry("L", strategy.long, qty = qty, comment = "RETEST ▲")

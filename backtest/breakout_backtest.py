@@ -207,7 +207,10 @@ def run_backtest(dates, o, h, l, c, v, cfg: Config):
     retest_done = False
     plan_entry_lvl = plan_stop = plan_t1 = plan_t2 = NA
     plan_bar = NA
+    plan_flip_bar = NA
     t1_done = False
+    t1_fill_done = False
+    standing_stop = NA
 
     cash = cfg.initial_capital
     pos_qty = 0.0
@@ -317,31 +320,33 @@ def run_backtest(dates, o, h, l, c, v, cfg: Config):
         confirmed_up = dir_ == 1 and confirm_cnt == cfg.confirm_closes
         confirmed_down = dir_ == -1 and confirm_cnt == cfg.confirm_closes
 
-        # ---------------- position management (before any new signal fill this bar,
-        # mirrors Pine script order: the management block sits after the signal block
-        # in source, but a new entry this bar has plan_bar == i so `i > plan_bar`
-        # gates it out; ordering here is therefore equivalent) ----------------
+        # ---------------- Phase A: intrabar order fills (TradingView's order:
+        # standing limit/stop orders execute during the bar, BEFORE the script's
+        # close-time calc). The intrabar stop uses the level the standing order
+        # was issued with at the PREVIOUS close (standing_stop) — a break-even
+        # raise detected later this bar only reaches orders from the next bar.
+        # When both a target and the stop are touched, the broker emulator's
+        # path heuristic decides which came first: open closer to high =>
+        # open->high->low->close (targets first), else stop first. ----------------
         if pos_qty > 1e-9 and plan_bar is not NA and i > plan_bar:
-            # limit fills first (intrabar), lower limit first for a long
-            if not t1_done and h[i] >= plan_t1:
-                t1_done = True
-                if cfg.t1_partial_pct > 0:
-                    fill(i, pos_entry_qty * cfg.t1_partial_pct / 100.0, max(o[i], plan_t1), "T1")
-                if cfg.be_after_t1:
-                    plan_stop = max(plan_stop, trade.entry_price if trade else plan_stop)
-            if pos_qty > 1e-9 and h[i] >= plan_t2:
-                fill(i, pos_qty, max(o[i], plan_t2), "T2")
-            # intrabar stop (optional mode)
-            if pos_qty > 1e-9 and not cfg.close_through_stop and l[i] <= plan_stop:
-                fill(i, pos_qty, min(o[i], plan_stop), "STOP")
-            # close-based exits on the remainder
-            if pos_qty > 1e-9:
-                if cfg.fail_exit and c[i] < plan_entry_lvl:
-                    fill(i, pos_qty, c[i], "FAIL")
-                elif cfg.close_through_stop and c[i] < plan_stop:
-                    fill(i, pos_qty, c[i], "STOP")
+            high_first = (h[i] - o[i]) <= (o[i] - l[i])
+            for ph in (('targets', 'stop') if high_first else ('stop', 'targets')):
+                if pos_qty <= 1e-9:
+                    break
+                if ph == 'targets':
+                    if cfg.t1_partial_pct > 0 and not t1_fill_done and h[i] >= plan_t1:
+                        t1_fill_done = True
+                        fill(i, min(pos_qty, pos_entry_qty * cfg.t1_partial_pct / 100.0), max(o[i], plan_t1), "T1")
+                    if pos_qty > 1e-9 and cfg.t1_partial_pct < 100 and h[i] >= plan_t2:
+                        fill(i, pos_qty, max(o[i], plan_t2), "T2")
+                else:
+                    if not cfg.close_through_stop and standing_stop is not NA and l[i] <= standing_stop:
+                        fill(i, pos_qty, min(o[i], standing_stop), "STOP")
 
-        # ---------------- signal handling ----------------
+        # ---------------- Phase B: signal handling (Pine's signal block runs
+        # before its close-based exits, so a bar that stops out an old trade at
+        # the close cannot also open a new one — position_size at this point
+        # reflects intrabar fills only) ----------------
         if confirmed_up or confirmed_down:
             up = confirmed_up
             level = pend_top if up else pend_bot
@@ -364,7 +369,9 @@ def run_backtest(dates, o, h, l, c, v, cfg: Config):
                 plan_t1 = level + cfg.t1_mult * zone_h
                 plan_t2 = level + cfg.t2_mult * zone_h
                 plan_bar = i
+                plan_flip_bar = flip_bar   # the flip signal this plan belongs to
                 t1_done = False
+                t1_fill_done = False
 
                 if (not cfg.retest_entry) and plan_stop < c[i]:
                     eq = equity_at_close(i)
@@ -389,6 +396,7 @@ def run_backtest(dates, o, h, l, c, v, cfg: Config):
                     retest_done = True
                     if (cfg.retest_entry and pos_qty <= 1e-9 and plan_stop is not NA
                             and plan_stop < c[i] and plan_bar is not NA
+                            and plan_flip_bar == flip_bar
                             and i - plan_bar <= cfg.retest_window):
                         eq = equity_at_close(i)
                         qty = (eq * cfg.risk_pct / 100.0) / (c[i] - plan_stop) if cfg.risk_sizing \
@@ -403,6 +411,7 @@ def run_backtest(dates, o, h, l, c, v, cfg: Config):
                             pos_entry_qty = qty
                             plan_bar = i
                             t1_done = False
+                            t1_fill_done = False
                 if c[i] < flip_level:
                     flip_dir = 0
                     # identical to the indicator: coil still intact → re-arm
@@ -415,6 +424,24 @@ def run_backtest(dates, o, h, l, c, v, cfg: Config):
             if new_consolidation:
                 flip_dir = 0
 
+        # ---------------- Phase C: close-time management (Pine's management
+        # block, which sits after the signal block): T1-touch detection with the
+        # break-even raise, then the FAIL / close-through-stop exits at the
+        # close. A position entered this bar (plan_bar == i) is not managed. ----------------
+        if pos_qty > 1e-9 and plan_bar is not NA and i > plan_bar:
+            if not t1_done and h[i] >= plan_t1:
+                t1_done = True
+                if cfg.be_after_t1 and trade is not None:
+                    plan_stop = max(plan_stop, trade.entry_price)
+            if cfg.fail_exit and c[i] < plan_entry_lvl:
+                fill(i, pos_qty, c[i], "FAIL")
+            elif cfg.close_through_stop and c[i] < plan_stop:
+                fill(i, pos_qty, c[i], "STOP")
+
+        # standing orders for the next bar are (re)issued at this close with the
+        # current stop — this is the level the intrabar stop can fill at next bar
+        standing_stop = plan_stop
+
         prev_consolidating = is_consolidating
         equity_curve.append(equity_at_close(i))
 
@@ -423,6 +450,7 @@ def run_backtest(dates, o, h, l, c, v, cfg: Config):
     if pos_qty > 1e-9:
         open_note = f"open position marked to market on {dates[-1]}"
         fill(n - 1, pos_qty, c[n - 1], "EOD")
+        equity_curve[-1] = cash  # reflect the liquidation fill (incl. commission)
 
     return trades, equity_curve, open_note
 
@@ -434,8 +462,9 @@ def stats(trades, equity_curve, dates, closes, cfg):
     s["trades"] = len(trades)
     if not trades:
         return s
-    wins = [t for t in trades if t.pnl > 0]
-    losses = [t for t in trades if t.pnl <= 0]
+    # epsilon guards against float residue: a true-scratch trade is not a win
+    wins = [t for t in trades if t.pnl > 1e-6]
+    losses = [t for t in trades if t.pnl <= 1e-6]
     gross_win = sum(t.pnl for t in wins)
     gross_loss = -sum(t.pnl for t in losses)
     s["win_rate"] = len(wins) / len(trades) * 100
