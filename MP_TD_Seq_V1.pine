@@ -192,6 +192,9 @@ type CountdownState
     bool   armed                       = false  // a completed Setup authorizes initiation (§3.7);
                                                 // cleared by cancellation so a negated Setup
                                                 // cannot silently re-launch the Countdown
+    float  tdstLevelAtArm              = na     // TDST level of the Setup that armed this phase —
+                                                // the §3.10.2 cancel reference, so a smaller
+                                                // non-recycling Setup cannot tighten it mid-count
     bool   active                      = false
     bool   complete                    = false
     bool   qualified                   = false
@@ -247,6 +250,14 @@ var line  sellRiskLine     = na
 var label sellRiskLabel    = na
 var box   sell12BarBox     = na
 var box   sellRiskZoneBox  = na
+
+// Live 12-bar reversal-window trackers — snapshotted on each qualified 13 so
+// the window's risk-violation/expiry checks survive the Countdown cycle reset
+// (a fresh same-direction Setup 9 can complete inside the window).
+var float buyActiveRiskLevel  = na
+var int   buyActiveRisk13Bar  = na
+var float sellActiveRiskLevel = na
+var int   sellActiveRisk13Bar = na
 
 // Diagnostic table.
 var table diagTable        = na
@@ -323,6 +334,7 @@ clearSetup(SetupState s) =>
 clearCountdown(CountdownState c) =>
     c.count := 0
     c.armed := false
+    c.tdstLevelAtArm := na
     c.active := false
     c.complete := false
     c.qualified := false
@@ -369,7 +381,10 @@ sellCDCanceledThisBar     = false
 // A new Price Flip after completion supersedes the old Setup. The Countdown
 // phase is tracked separately (armed/active on CountdownState), so a mere
 // flip that starts a 1-count Setup does not destroy a pending Countdown.
-buyStartingNew = bearishFlip or (buySetup.count == 0 and not requirePriceFlip and buySetupCond)
+// Without the flip requirement, a fresh count may also start after a completed
+// Setup once its condition run has broken (count stays locked at 9, so the
+// idle `count == 0` state alone would never recur in that mode).
+buyStartingNew = bearishFlip or (not requirePriceFlip and buySetupCond and (buySetup.count == 0 or (buySetup.complete and not buySetupCond[1])))
 
 if buyStartingNew
     // start fresh — overwrite any prior (idle/building/completed) state
@@ -417,7 +432,7 @@ if buySetupCountedThisBar
 // ----------------------------------------------------------------------------
 // 5.4  SELL SETUP STATE  (§3.4)
 // ----------------------------------------------------------------------------
-sellStartingNew = bullishFlip or (sellSetup.count == 0 and not requirePriceFlip and sellSetupCond)
+sellStartingNew = bullishFlip or (not requirePriceFlip and sellSetupCond and (sellSetup.count == 0 or (sellSetup.complete and not sellSetupCond[1])))
 
 if sellStartingNew
     clearSetup(sellSetup)
@@ -610,6 +625,7 @@ if buySetupCompletedThisBar
     if not buyCountdown.active
         buyCountdown.armed := true
         buyCountdown.setupRefBarIdx := buySetup.completionBar
+        buyCountdown.tdstLevelAtArm := activeBuyTDST.active ? activeBuyTDST.level : na
 if sellSetupCompletedThisBar
     if sellCountdown.complete
         clearCountdown(sellCountdown)
@@ -617,6 +633,7 @@ if sellSetupCompletedThisBar
     if not sellCountdown.active
         sellCountdown.armed := true
         sellCountdown.setupRefBarIdx := sellSetup.completionBar
+        sellCountdown.tdstLevelAtArm := activeSellTDST.active ? activeSellTDST.level : na
 
 // ----------------------------------------------------------------------------
 // 5.9  RECYCLE — 22-bar Setup extension  (§3.11.1)
@@ -637,6 +654,7 @@ if enable22BarRecycle
                 array.clear(buyCountdownBars)
                 buyCountdown.armed := true          // the extended Setup recycles as the new reference
                 buyCountdown.setupRefBarIdx := bar_index
+                buyCountdown.tdstLevelAtArm := activeBuyTDST.active ? activeBuyTDST.level : na
                 buySetup.extensionBroken := true    // one recycle per extension run
         else
             buySetup.extensionBroken := true
@@ -650,6 +668,7 @@ if enable22BarRecycle
                 array.clear(sellCountdownBars)
                 sellCountdown.armed := true
                 sellCountdown.setupRefBarIdx := bar_index
+                sellCountdown.tdstLevelAtArm := activeSellTDST.active ? activeSellTDST.level : na
                 sellSetup.extensionBroken := true
         else
             sellSetup.extensionBroken := true
@@ -715,6 +734,8 @@ else if buyCountdown.active and not buyCountdown.complete
                 buyCDCountedThisBar := true
                 // Risk Level (§3.12).
                 buyCountdown.riskLevel := buyCountdown.lowestTrueLowInCountdown - buyCountdown.trueRangeAtExtreme
+                buyActiveRiskLevel := buyCountdown.riskLevel
+                buyActiveRisk13Bar := bar_index
                 buy13QualifiedThisBar := true
                 lastEventText := "Buy CD 13 qualified"
             else
@@ -760,6 +781,8 @@ else if sellCountdown.active and not sellCountdown.complete
                 array.push(sellCountdownBars, bar_index)
                 sellCDCountedThisBar := true
                 sellCountdown.riskLevel := sellCountdown.highestTrueHighInCountdown + sellCountdown.trueRangeAtExtreme
+                sellActiveRiskLevel := sellCountdown.riskLevel
+                sellActiveRisk13Bar := bar_index
                 sell13QualifiedThisBar := true
                 lastEventText := "Sell CD 13 qualified"
             else
@@ -771,13 +794,15 @@ else if sellCountdown.active and not sellCountdown.complete
 // 5.11  TDST VIOLATION CANCEL  (§3.10.2)
 // ----------------------------------------------------------------------------
 // Canonical: a Buy Countdown is canceled when price closes above the BUY-side
-// TDST Resistance of the current Setup phase (the downtrend it is counting is
+// TDST Resistance of its own Setup phase (the downtrend it is counting is
 // negated); a Sell Countdown when price closes below the SELL-side TDST
-// Support. A pending (armed, not yet counting) Countdown is disarmed by the
-// same violation.
+// Support. The reference is the level snapshotted when the phase was armed —
+// a smaller intervening Setup that the recycle logic ignored must not tighten
+// the cancel threshold mid-count. A pending (armed, not yet counting)
+// Countdown is disarmed by the same violation.
 if enableTDSTCancel
-    if not buyCountdown.complete and (buyCountdown.active or buyCountdown.armed) and activeBuyTDST.active
-        breakHit = tdstBreakRule == "intrabar" ? th0 > activeBuyTDST.level : close > activeBuyTDST.level
+    if not buyCountdown.complete and (buyCountdown.active or buyCountdown.armed) and not na(buyCountdown.tdstLevelAtArm)
+        breakHit = tdstBreakRule == "intrabar" ? th0 > buyCountdown.tdstLevelAtArm : close > buyCountdown.tdstLevelAtArm
         if breakHit
             if buyCountdown.active
                 lastEventText := "Buy CD canceled: TDST violation"
@@ -786,8 +811,8 @@ if enableTDSTCancel
                 lastEventText := "Buy CD disarmed: TDST violation"
             clearCountdown(buyCountdown)
             array.clear(buyCountdownBars)
-    if not sellCountdown.complete and (sellCountdown.active or sellCountdown.armed) and activeSellTDST.active
-        breakHit = tdstBreakRule == "intrabar" ? tl0 < activeSellTDST.level : close < activeSellTDST.level
+    if not sellCountdown.complete and (sellCountdown.active or sellCountdown.armed) and not na(sellCountdown.tdstLevelAtArm)
+        breakHit = tdstBreakRule == "intrabar" ? tl0 < sellCountdown.tdstLevelAtArm : close < sellCountdown.tdstLevelAtArm
         if breakHit
             if sellCountdown.active
                 lastEventText := "Sell CD canceled: TDST violation"
@@ -900,12 +925,15 @@ if sell13QualifiedThisBar and showRiskZone
 // ----------------------------------------------------------------------------
 // 5.12  12-BAR RULE EXPIRY + RISK LEVEL VIOLATION  (§3.13)
 // ----------------------------------------------------------------------------
-// Both events only apply while the 12-bar reversal window is live.
-buyRiskViolated  = buyCountdown.complete and not na(buyCountdown.riskLevel) and (bar_index - buyCountdown.completionBar) <= 12 and close < buyCountdown.riskLevel and close[1] >= buyCountdown.riskLevel
-sellRiskViolated = sellCountdown.complete and not na(sellCountdown.riskLevel) and (bar_index - sellCountdown.completionBar) <= 12 and close > sellCountdown.riskLevel and close[1] <= sellCountdown.riskLevel
+// Both events only apply while a 12-bar reversal window is live. They read
+// the snapshot trackers (not CountdownState) so the window survives the
+// Countdown cycle reset when a fresh same-direction Setup 9 completes inside
+// it; the trackers are retired once the window is violated or closes.
+buyRiskViolated  = not na(buyActiveRiskLevel) and not na(buyActiveRisk13Bar) and (bar_index - buyActiveRisk13Bar) <= 12 and close < buyActiveRiskLevel and close[1] >= buyActiveRiskLevel
+sellRiskViolated = not na(sellActiveRiskLevel) and not na(sellActiveRisk13Bar) and (bar_index - sellActiveRisk13Bar) <= 12 and close > sellActiveRiskLevel and close[1] <= sellActiveRiskLevel
 
-buy12BarExpired  = buyCountdown.complete and not na(buyCountdown.completionBar) and (bar_index - buyCountdown.completionBar) == 12
-sell12BarExpired = sellCountdown.complete and not na(sellCountdown.completionBar) and (bar_index - sellCountdown.completionBar) == 12
+buy12BarExpired  = not na(buyActiveRisk13Bar) and (bar_index - buyActiveRisk13Bar) == 12
+sell12BarExpired = not na(sellActiveRisk13Bar) and (bar_index - sellActiveRisk13Bar) == 12
 
 if buyRiskViolated
     lastEventText := "Buy Risk violated"
@@ -928,6 +956,14 @@ if buy12BarExpired
     lastEventText := "Buy 12-bar window closed"
 if sell12BarExpired
     lastEventText := "Sell 12-bar window closed"
+
+// Retire the window trackers once violated or closed.
+if buyRiskViolated or buy12BarExpired
+    buyActiveRiskLevel := na
+    buyActiveRisk13Bar := na
+if sellRiskViolated or sell12BarExpired
+    sellActiveRiskLevel := na
+    sellActiveRisk13Bar := na
 
 
 // ============================================================================
